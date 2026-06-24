@@ -104,41 +104,56 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             _isStaticActive.value = true
             playWhiteNoiseSound()
 
+            val currentChannels = channels.value
             val totalSteps = 40
             val startFreq = 45.25f
             val endFreq = 800.00f
             val freqStep = (endFreq - startFreq) / totalSteps
 
-            for (step in 0..totalSteps) {
-                val currentFreq = startFreq + (freqStep * step)
-                _tuningFrequency.value = currentFreq
-                _tuningStatusText.value = "TUNING ANALOG BAND: ${String.format("%.2f", currentFreq)} MHz"
-                
-                // Play short burst of white noise sound occasionally
-                if (step % 12 == 0) {
-                    playWhiteNoiseSound()
-                }
-
-                // Simulate locking a channel signal
-                if (step == 8 || step == 16 || step == 24 || step == 32 || step == 38) {
-                    _tuningStatusText.value = "SIGNAL FOUND AT ${String.format("%.2f", currentFreq)} MHz - SAVING..."
-                    delay(350)
-                } else {
+            if (currentChannels.isEmpty()) {
+                // No channels - sweep with error
+                for (step in 0..totalSteps) {
+                    val currentFreq = startFreq + (freqStep * step)
+                    _tuningFrequency.value = currentFreq
+                    _tuningStatusText.value = "SEARCHING VHF/UHF BANDS: ${String.format("%.2f", currentFreq)} MHz..."
+                    
+                    if (step % 12 == 0) {
+                        playWhiteNoiseSound()
+                    }
                     delay(80)
                 }
-            }
-
-            _tuningStatusText.value = "AUTO-TUNING COMPLETE! CHANNELS LOCKED."
-            delay(1000)
-
-            _isTuning.value = false
-            sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
-            
-            // Auto play the first channel
-            channels.value.firstOrNull()?.let {
-                setActiveChannel(it)
-            } ?: run {
+                _tuningStatusText.value = "ERROR: NO CHANNELS DETECTED. PLEASE IMPORT M3U PLAYLIST SOURCE."
+                delay(2000)
+                _isTuning.value = false
                 _isStaticActive.value = false
+            } else {
+                // Sweep and map real channels to frequency segments
+                val stepInterval = (totalSteps / currentChannels.size).coerceAtLeast(1)
+                for (step in 0..totalSteps) {
+                    val currentFreq = startFreq + (freqStep * step)
+                    _tuningFrequency.value = currentFreq
+                    
+                    // Check if we hit a step to lock a real channel
+                    val channelIndex = step / stepInterval
+                    if (step % stepInterval == 0 && channelIndex < currentChannels.size) {
+                        val lockingChannel = currentChannels[channelIndex]
+                        _tuningStatusText.value = "LOCKING CH ${lockingChannel.channelNumber}: ${lockingChannel.name.uppercase()} AT ${String.format("%.2f", currentFreq)} MHz..."
+                        playWhiteNoiseSound()
+                        delay(400)
+                    } else {
+                        _tuningStatusText.value = "SCANNING ANALOG FREQUENCY: ${String.format("%.2f", currentFreq)} MHz"
+                        delay(80)
+                    }
+                }
+                
+                _tuningStatusText.value = "SUCCESS: ${currentChannels.size} CHANNELS INSTALLED!"
+                delay(1500)
+                _isTuning.value = false
+                _isStaticActive.value = false
+                
+                // Tune to first channel or restore
+                sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
+                restoreLastWatchedChannel()
             }
         }
     }
@@ -290,16 +305,29 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Selects and plays the first channel of a playlist.
+     */
+    fun selectPlaylist(playlist: M3UPlaylist) {
+        viewModelScope.launch {
+            val list = channels.value.filter { it.playlistId == playlist.id }
+            if (list.isNotEmpty()) {
+                setActiveChannel(list.first())
+            }
+        }
+    }
+
     private fun restoreLastWatchedChannel() {
         viewModelScope.launch {
-            val savedNum = sharedPrefs.getInt("last_watched_channel_num", -1)
-            val list = channels.value
-            if (list.isNotEmpty()) {
+            if (repository.getChannelCount() > 0) {
+                // Wait for the flow to emit a non-empty list of channels
+                val list = channels.filter { it.isNotEmpty() }.first()
+                val savedNum = sharedPrefs.getInt("last_watched_channel_num", -1)
                 val lastChannel = list.find { it.channelNumber == savedNum }
                 if (lastChannel != null) {
-                    setActiveChannel(lastChannel)
+                    _activeChannel.value = lastChannel
                 } else {
-                    setActiveChannel(list.first())
+                    _activeChannel.value = list.first()
                 }
             }
         }

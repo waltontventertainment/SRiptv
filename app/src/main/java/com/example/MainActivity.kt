@@ -151,7 +151,11 @@ class MainActivity : ComponentActivity() {
                     ) {
                         RetroChannelDrawer(
                             viewModel = viewModel,
-                            onClose = { showChannelGuide = false }
+                            onClose = { showChannelGuide = false },
+                            onOpenSettings = {
+                                showChannelGuide = false
+                                showSettings = true
+                            }
                         )
                     }
 
@@ -229,11 +233,24 @@ class MainActivity : ComponentActivity() {
                     return true
                 }
             }
+            KeyEvent.KEYCODE_NUMPAD_0, KeyEvent.KEYCODE_NUMPAD_1, KeyEvent.KEYCODE_NUMPAD_2, KeyEvent.KEYCODE_NUMPAD_3,
+            KeyEvent.KEYCODE_NUMPAD_4, KeyEvent.KEYCODE_NUMPAD_5, KeyEvent.KEYCODE_NUMPAD_6, KeyEvent.KEYCODE_NUMPAD_7,
+            KeyEvent.KEYCODE_NUMPAD_8, KeyEvent.KEYCODE_NUMPAD_9 -> {
+                if (!showSettings && !showExitDialog) {
+                    val digit = keyCode - KeyEvent.KEYCODE_NUMPAD_0
+                    viewModel.pressNumericKey(digit)
+                    return true
+                }
+            }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 if (!showSettings && !showExitDialog && !showChannelGuide) {
                     // Immediate channel confirmation if user is typing a channel index
                     if (viewModel.inputBufferText.value.isNotEmpty()) {
                         viewModel.commitNumpadInput()
+                        return true
+                    } else {
+                        // Toggle Channel Guide / Settings Drawer
+                        showChannelGuide = true
                         return true
                     }
                 }
@@ -691,49 +708,73 @@ fun RetroSettingsMenu(
             ) {
                 items(playlists) { playlist ->
                     var isCardFocused by remember { mutableStateOf(false) }
+                    var isDeleteFocused by remember { mutableStateOf(false) }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .border(
-                                1.dp,
-                                if (isCardFocused) phosphorGreen else phosphorGreen.copy(alpha = 0.3f)
-                            )
-                            .background(if (isCardFocused) Color(0xFF122212) else Color.Transparent)
-                            .onFocusChanged { isCardFocused = it.isFocused }
-                            .focusable()
-                            .padding(8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = playlist.name.uppercase(),
-                                color = phosphorGreen,
-                                fontSize = 12.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = playlist.url,
-                                color = Color.Gray,
-                                fontSize = 10.sp,
-                                fontFamily = FontFamily.Monospace,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        // Left side: Clickable/Focusable playlist info button
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .border(
+                                    1.dp,
+                                    if (isCardFocused) phosphorGreen else phosphorGreen.copy(alpha = 0.3f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .background(if (isCardFocused) Color(0xFF122212) else Color.Transparent, RoundedCornerShape(4.dp))
+                                .onFocusChanged { isCardFocused = it.isFocused }
+                                .clickable {
+                                    viewModel.selectPlaylist(playlist)
+                                    onClose()
+                                }
+                                .focusable()
+                                .padding(12.dp)
+                        ) {
+                            Column {
+                                Text(
+                                    text = playlist.name.uppercase(),
+                                    color = phosphorGreen,
+                                    fontSize = 12.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = playlist.url,
+                                    color = Color.Gray,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
 
-                        // Wipe playlist
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // Right side: Focusable, clickable delete icon
                         IconButton(
                             onClick = { viewModel.deletePlaylist(playlist.id) },
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier
+                                .size(40.dp)
+                                .border(
+                                    1.dp,
+                                    if (isDeleteFocused) Color.Red else Color.Transparent,
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .background(if (isDeleteFocused) Color(0xFF2A0C0C) else Color.Transparent, RoundedCornerShape(4.dp))
+                                .onFocusChanged { isDeleteFocused = it.isFocused }
+                                .focusable()
+                                .testTag("delete_playlist_${playlist.id}")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Delete,
                                 contentDescription = "Wipe Playlist Source",
-                                tint = Color.Red,
-                                modifier = Modifier.size(16.dp)
+                                tint = if (isDeleteFocused) Color.Red else Color.Red.copy(alpha = 0.6f),
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -800,6 +841,7 @@ fun RetroSettingsMenu(
 fun RetroChannelDrawer(
     viewModel: IptvViewModel,
     onClose: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val channels by viewModel.channels.collectAsState()
@@ -889,25 +931,52 @@ fun RetroChannelDrawer(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Close Button
-            var isCloseFocused by remember { mutableStateOf(false) }
-            Button(
-                onClick = onClose,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isCloseFocused) phosphorGreen else Color.Transparent
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { isCloseFocused = it.isFocused }
-                    .border(1.dp, phosphorGreen),
-                shape = RoundedCornerShape(4.dp)
+            // Action Buttons Row (Settings & Dismiss)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "DISMISS",
-                    color = if (isCloseFocused) Color.Black else phosphorGreen,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                )
+                // Settings Button
+                var isSettingsFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = onOpenSettings,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSettingsFocused) phosphorGreen else Color.Transparent
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { isSettingsFocused = it.isFocused }
+                        .border(1.dp, phosphorGreen),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = "SETTINGS",
+                        color = if (isSettingsFocused) Color.Black else phosphorGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // Close Button
+                var isCloseFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = onClose,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isCloseFocused) phosphorGreen else Color.Transparent
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { isCloseFocused = it.isFocused }
+                        .border(1.dp, phosphorGreen),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = "DISMISS",
+                        color = if (isCloseFocused) Color.Black else phosphorGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
