@@ -172,31 +172,31 @@ class MainActivity : ComponentActivity() {
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center,
                                 modifier = Modifier
-                                    .border(2.dp, Color.Red, RoundedCornerShape(4.dp))
+                                    .border(2.dp, Color.Red, RoundedCornerShape(0.5.vw()))
                                     .background(Color(0xFF2A0C0C))
-                                    .padding(24.dp)
+                                    .padding(4.vw())
                             ) {
                                 Text(
-                                    text = "⚠️ NO SIGNAL ⚠️",
+                                    text = if (streamErrorMessage.contains("RECONNECTING")) "📡 SIGNAL LOST 📡" else "⚠️ NO SIGNAL ⚠️",
                                     color = Color.Red,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 18.sp
+                                    fontSize = 2.5.vh().value.sp
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(1.vh()))
                                 Text(
                                     text = "CHECK PLAYLIST SOURCE OR NETWORK",
                                     color = Color.White,
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp
+                                    fontSize = 1.5.vh().value.sp
                                 )
                                 if (streamErrorMessage.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Spacer(modifier = Modifier.height(0.8.vh()))
                                     Text(
                                         text = streamErrorMessage.uppercase(),
                                         color = Color.Yellow,
                                         fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.sp
+                                        fontSize = 1.2.vh().value.sp
                                     )
                                 }
                             }
@@ -208,15 +208,15 @@ class MainActivity : ComponentActivity() {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(24.dp),
+                                .padding(4.vw()),
                             contentAlignment = Alignment.TopEnd
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
-                                    .background(Color(0xFF1A120A), RoundedCornerShape(4.dp))
-                                    .border(1.dp, Color(0xFFFFB000), RoundedCornerShape(4.dp))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .background(Color(0xFF1A120A), RoundedCornerShape(0.4.vw()))
+                                    .border(1.dp, Color(0xFFFFB000), RoundedCornerShape(0.4.vw()))
+                                    .padding(horizontal = 2.vw(), vertical = 1.vh())
                             ) {
                                 Box(
                                     modifier = Modifier
@@ -529,15 +529,17 @@ fun AndroidVideoPlayer(
         if (playerInstance == null) {
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    2500, // minBufferMs
-                    10000, // maxBufferMs
-                    500,  // bufferForPlaybackMs
-                    2000  // bufferForPlaybackAfterRebufferMs
+                    15000, // minBufferMs: total buffer to keep
+                    50000, // maxBufferMs
+                    1000,  // bufferForPlaybackMs: wait for 1s of data before starting
+                    2500   // bufferForPlaybackAfterRebufferMs
                 )
                 .build()
 
             val dataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .setConnectTimeoutMs(30000) // Increased to 30s
+                .setReadTimeoutMs(30000)    // Increased to 30s
                 .setAllowCrossProtocolRedirects(true)
             
             val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)

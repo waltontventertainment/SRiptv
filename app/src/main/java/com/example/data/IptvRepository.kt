@@ -121,8 +121,8 @@ class IptvRepository(private val iptvDao: IptvDao) {
                     "User-Agent", 
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 )
-                connection.connectTimeout = 15000
-                connection.readTimeout = 15000
+                connection.connectTimeout = 30000
+                connection.readTimeout = 30000
                 connection.instanceFollowRedirects = false
                 connection.doInput = true
 
