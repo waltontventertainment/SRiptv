@@ -31,6 +31,20 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _isStaticActive = MutableStateFlow(false)
     val isStaticActive: StateFlow<Boolean> = _isStaticActive.asStateFlow()
 
+    // Dynamic Video Aspect Ratio (FILL, FIT, ZOOM)
+    private val _aspectRatioMode = MutableStateFlow("FILL")
+    val aspectRatioMode: StateFlow<String> = _aspectRatioMode.asStateFlow()
+
+    // Stream playback quality and health indicators
+    private val _isStreamBuffering = MutableStateFlow(false)
+    val isStreamBuffering: StateFlow<Boolean> = _isStreamBuffering.asStateFlow()
+
+    private val _isStreamError = MutableStateFlow(false)
+    val isStreamError: StateFlow<Boolean> = _isStreamError.asStateFlow()
+
+    private val _streamErrorMessage = MutableStateFlow("")
+    val streamErrorMessage: StateFlow<String> = _streamErrorMessage.asStateFlow()
+
     // Simulated Analog Auto-Tuning states
     private val _isTuning = MutableStateFlow(false)
     val isTuning: StateFlow<Boolean> = _isTuning.asStateFlow()
@@ -167,6 +181,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             // Save state
             sharedPrefs.edit().putInt("last_watched_channel_num", channel.channelNumber).apply()
 
+            // Reset signal/stream health indicators for the new channel
+            _isStreamBuffering.value = false
+            _isStreamError.value = false
+            _streamErrorMessage.value = ""
+
             // Replicate 1.0s CRT channel changing static and sound
             staticOverlayJob?.cancel()
             _isStaticActive.value = true
@@ -176,6 +195,35 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
                 delay(1000) // Exactly 1-second physical STB relay transition
                 _isStaticActive.value = false
             }
+        }
+    }
+
+    /**
+     * Toggles video scaling/aspect ratio mode.
+     */
+    fun toggleAspectRatio() {
+        _aspectRatioMode.value = when (_aspectRatioMode.value) {
+            "FILL" -> "FIT"
+            "FIT" -> "ZOOM"
+            else -> "FILL"
+        }
+    }
+
+    /**
+     * Updates playback buffering state.
+     */
+    fun setStreamBuffering(buffering: Boolean) {
+        _isStreamBuffering.value = buffering
+    }
+
+    /**
+     * Updates stream playback errors and plays static noise burst if signal is lost.
+     */
+    fun setStreamError(error: Boolean, message: String = "") {
+        _isStreamError.value = error
+        _streamErrorMessage.value = message
+        if (error) {
+            playWhiteNoiseSound()
         }
     }
 

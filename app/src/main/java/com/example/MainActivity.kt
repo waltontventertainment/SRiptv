@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -93,9 +94,14 @@ class MainActivity : ComponentActivity() {
                     val activeChannel by viewModel.activeChannel.collectAsState()
                     val isStaticActive by viewModel.isStaticActive.collectAsState()
 
+                    val isStreamError by viewModel.isStreamError.collectAsState()
+                    val streamErrorMessage by viewModel.streamErrorMessage.collectAsState()
+                    val isStreamBuffering by viewModel.isStreamBuffering.collectAsState()
+
                     if (activeChannel != null && crtState == CrtScreenState.IDLE) {
                         AndroidVideoPlayer(
                             url = activeChannel!!.url,
+                            viewModel = viewModel,
                             onPlayerCreated = { player ->
                                 exoPlayer = player
                                 // Setup media session
@@ -113,8 +119,83 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // 2. Retro Static Noise overlay (ঝিরঝির)
-                    if (isStaticActive || viewModel.isTuning.collectAsState().value) {
+                    if (isStaticActive || viewModel.isTuning.collectAsState().value || isStreamError) {
                         CrtStaticNoise()
+                    }
+
+                    // 2b. Stream Error Warning Box Overlay (CRT No Signal)
+                    if (isStreamError && !isStaticActive) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.5f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .border(2.dp, Color.Red, RoundedCornerShape(4.dp))
+                                    .background(Color(0xFF2A0C0C))
+                                    .padding(24.dp)
+                            ) {
+                                Text(
+                                    text = "⚠️ NO SIGNAL ⚠️",
+                                    color = Color.Red,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "CHECK PLAYLIST SOURCE OR NETWORK",
+                                    color = Color.White,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                )
+                                if (streamErrorMessage.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = streamErrorMessage.uppercase(),
+                                        color = Color.Yellow,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 2c. Stream Buffering / "Locking Signal" Overlay indicator
+                    if (isStreamBuffering && !isStaticActive && !isStreamError) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.TopEnd
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .background(Color(0xFF1A120A), RoundedCornerShape(4.dp))
+                                    .border(1.dp, Color(0xFFFFB000), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .background(Color(0xFFFFB000), CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "LOCKING SIGNAL...",
+                                    color = Color(0xFFFFB000),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
 
                     // 3. Vintage CRT Scanline and Screen bulge filters
@@ -289,25 +370,76 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AndroidVideoPlayer(
     url: String,
+    viewModel: com.example.ui.IptvViewModel,
     onPlayerCreated: (ExoPlayer) -> Unit,
     onPlayerReleased: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
+    val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
+
+    val resizeMode = when (aspectRatioMode) {
+        "FIT" -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+        "ZOOM" -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        else -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+    }
 
     LaunchedEffect(url) {
         if (playerInstance == null) {
-            val player = ExoPlayer.Builder(context).build().apply {
-                playWhenReady = true
-                repeatMode = ExoPlayer.REPEAT_MODE_ONE
-            }
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    2500, // minBufferMs
+                    5000, // maxBufferMs
+                    500,  // bufferForPlaybackMs
+                    1000  // bufferForPlaybackAfterRebufferMs
+                )
+                .build()
+
+            val player = ExoPlayer.Builder(context)
+                .setLoadControl(loadControl)
+                .build().apply {
+                    playWhenReady = true
+                    repeatMode = ExoPlayer.REPEAT_MODE_ONE
+                }
+
+            player.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onPlaybackStateChanged(state: Int) {
+                    when (state) {
+                        androidx.media3.common.Player.STATE_BUFFERING -> {
+                            viewModel.setStreamBuffering(true)
+                            viewModel.setStreamError(false)
+                        }
+                        androidx.media3.common.Player.STATE_READY -> {
+                            viewModel.setStreamBuffering(false)
+                            viewModel.setStreamError(false)
+                        }
+                        androidx.media3.common.Player.STATE_ENDED -> {
+                            viewModel.setStreamBuffering(false)
+                        }
+                    }
+                }
+
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    android.util.Log.e("AndroidVideoPlayer", "ExoPlayer error: ${error.message}", error)
+                    viewModel.setStreamBuffering(false)
+                    val cleanMsg = when (error.errorCode) {
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "CONNECTION TIMEOUT"
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "BAD HTTP STATUS"
+                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "UNSUPPORTED CODEC"
+                        else -> "SIGNAL INTERRUPTED"
+                    }
+                    viewModel.setStreamError(true, "$cleanMsg (${error.errorCodeName})")
+                }
+            })
+
             playerInstance = player
             onPlayerCreated(player)
         }
 
         playerInstance?.let { player ->
-            val mediaItem = MediaItem.fromUri(url)
+            val mediaItem = androidx.media3.common.MediaItem.fromUri(url)
             player.setMediaItem(mediaItem)
             player.prepare()
         }
@@ -325,11 +457,12 @@ fun AndroidVideoPlayer(
             PlayerView(ctx).apply {
                 player = playerInstance
                 useController = false
-                resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
+                this.resizeMode = resizeMode
             }
         },
         update = { view ->
             view.player = playerInstance
+            view.resizeMode = resizeMode
         },
         modifier = modifier.fillMaxSize()
     )
@@ -799,6 +932,30 @@ fun RetroSettingsMenu(
                 Text(
                     text = "RUN ANALOG AUTO-TUNING",
                     color = if (isTuneBtnFocused) Color.Black else phosphorGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Aspect Ratio configuration
+            val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
+            var isAspectBtnFocused by remember { mutableStateOf(false) }
+            Button(
+                onClick = { viewModel.toggleAspectRatio() },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isAspectBtnFocused) phosphorGreen else Color.Transparent
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { isAspectBtnFocused = it.isFocused }
+                    .border(1.dp, phosphorGreen),
+                shape = RoundedCornerShape(4.dp)
+            ) {
+                Text(
+                    text = "CRT ASPECT RATIO: $aspectRatioMode",
+                    color = if (isAspectBtnFocused) Color.Black else phosphorGreen,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
