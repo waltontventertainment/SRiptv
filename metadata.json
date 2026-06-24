@@ -1,0 +1,6 @@
+{
+  "name": "SR IPTV",
+  "description": "Nostalgic 90s CRT and STB retro style IPTV with physical D-pad remote mapping.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
