@@ -21,6 +21,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -88,6 +90,7 @@ class MainActivity : ComponentActivity() {
     private var showSettings by mutableStateOf(false)
     private var showChannelGuide by mutableStateOf(false)
     private var showExitDialog by mutableStateOf(false)
+    private var showPlayerControls by mutableStateOf(false)
     private var crtState by mutableStateOf(CrtScreenState.IDLE)
 
     // Retro Bitmap Fonts
@@ -322,6 +325,14 @@ class MainActivity : ComponentActivity() {
                     // 9. Playlist Importing overlay
                     PlaylistImportingOverlay(viewModel = viewModel)
 
+                    // 9b. Player Controls Overlay
+                    if (showPlayerControls) {
+                        PlayerControlsOverlay(
+                            player = exoPlayer,
+                            onClose = { showPlayerControls = false }
+                        )
+                    }
+
                     // 10. CRT Screen Off Effect overlay
                     CrtScreenOffOverlay(
                         state = crtState,
@@ -336,6 +347,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Respecting user request: Pause playback when app is backgrounded
+        exoPlayer?.pause()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        exoPlayer?.pause()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mediaSession?.release()
+        exoPlayer?.release()
     }
 
     /**
@@ -457,6 +485,9 @@ class MainActivity : ComponentActivity() {
                 if (showSettings) {
                     showSettings = false
                     return true
+                } else if (showPlayerControls) {
+                    showPlayerControls = false
+                    return true
                 } else if (showChannelGuide) {
                     showChannelGuide = false
                     return true
@@ -484,8 +515,10 @@ class MainActivity : ComponentActivity() {
             if (event?.isTracking == true && !event.isLongPress) {
                 if (viewModel.inputBufferText.value.isNotEmpty()) {
                     viewModel.commitNumpadInput()
+                } else if (showSettings || showExitDialog || showChannelGuide || viewModel.isGridViewVisible.value) {
+                    // Menus handle their own focus/clicks
                 } else {
-                    showChannelGuide = true
+                    showPlayerControls = !showPlayerControls
                 }
                 return true
             }
@@ -618,7 +651,14 @@ fun AndroidVideoPlayer(
         }
 
         playerInstance?.let { player ->
-            val mediaItem = androidx.media3.common.MediaItem.fromUri(url)
+            val mediaItem = androidx.media3.common.MediaItem.Builder()
+                .setUri(url)
+                .setMediaMetadata(
+                    androidx.media3.common.MediaMetadata.Builder()
+                        .setTitle(viewModel.activeChannel.value?.name ?: "UNKNOWN CHANNEL")
+                        .build()
+                )
+                .build()
             player.setMediaItem(mediaItem)
             player.prepare()
         }
@@ -1108,6 +1148,23 @@ fun IptvOsdOverlay(
     }
 }
 
+@Composable
+fun Modifier.retroFocusEffect(
+    isFocused: Boolean,
+    focusedColor: Color = Color.Red,
+    unfocusedColor: Color = Color.Transparent,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(4.dp)
+): Modifier = this
+    .border(
+        width = if (isFocused) 2.dp else 1.dp,
+        color = if (isFocused) focusedColor else unfocusedColor,
+        shape = shape
+    )
+    .background(
+        color = if (isFocused) focusedColor.copy(alpha = 0.2f) else Color.Transparent,
+        shape = shape
+    )
+
 /**
  * Transparent Settings Gear Trigger Button. Focusable via TV D-pad.
  */
@@ -1139,22 +1196,14 @@ fun SettingsTriggerButton(
                 .focusRequester(focusRequester)
                 .onFocusChanged { isFocused = it.isFocused }
                 .focusable()
-                .background(
-                    if (isFocused) Color(0xFF00FF00).copy(alpha = 0.3f) else Color.Black.copy(alpha = 0.2f),
-                    shape = RoundedCornerShape(24.dp)
-                )
-                .border(
-                    width = 2.dp,
-                    color = if (isFocused) Color(0xFF00FF00) else Color.Transparent,
-                    shape = RoundedCornerShape(24.dp)
-                )
+                .retroFocusEffect(isFocused, focusedColor = Color.Red, shape = CircleShape)
                 .size(48.dp)
                 .testTag("settings_gear_button")
         ) {
             Icon(
                 imageVector = Icons.Default.Settings,
                 contentDescription = "Open Retro Settings Menu",
-                tint = if (isFocused) Color(0xFF00FF00) else Color.White.copy(alpha = 0.6f)
+                tint = if (isFocused) Color.Red else Color.White.copy(alpha = 0.6f)
             )
         }
     }
@@ -1230,7 +1279,8 @@ fun RetroSettingsMenu(
             .border(2.dp, phosphorGreen)
             .padding(24.dp)
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        val scrollState = rememberScrollState()
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
             // Header
             Text(
                 text = "SYSTEM CONFIGURATION",
@@ -1320,25 +1370,27 @@ fun RetroSettingsMenu(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                var isBdFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = {
                         playlistName = "BD CHANNELS"
                         playlistUrl = "https://iptv-org.github.io/iptv/countries/bd.m3u"
                     },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
-                    border = BorderStroke(1.dp, phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isBdFocused = it.isFocused }.retroFocusEffect(isBdFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isBdFocused) Color.White else phosphorGreen),
+                    border = BorderStroke(1.dp, if (isBdFocused) Color.Red else phosphorGreen)
                 ) {
                     Text("BD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
+                var isWorldFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = {
                         playlistName = "WORLD CHANNELS"
                         playlistUrl = "https://iptv-org.github.io/iptv/index.m3u"
                     },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
-                    border = BorderStroke(1.dp, phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isWorldFocused = it.isFocused }.retroFocusEffect(isWorldFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isWorldFocused) Color.White else phosphorGreen),
+                    border = BorderStroke(1.dp, if (isWorldFocused) Color.Red else phosphorGreen)
                 ) {
                     Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
@@ -1356,11 +1408,12 @@ fun RetroSettingsMenu(
             )
             Spacer(modifier = Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                var isFontFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = { viewModel.cycleFont() },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
-                    border = BorderStroke(1.dp, phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isFontFocused = it.isFocused }.retroFocusEffect(isFontFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isFontFocused) Color.White else phosphorGreen),
+                    border = BorderStroke(1.dp, if (isFontFocused) Color.Red else phosphorGreen)
                 ) {
                     val fontIndex by viewModel.selectedFontIndex.collectAsState()
                     val fontName = when(fontIndex) {
@@ -1370,11 +1423,12 @@ fun RetroSettingsMenu(
                     }
                     Text("FONT: $fontName", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
+                var isLockFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = { viewModel.toggleQuickLock() },
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen),
-                    border = BorderStroke(1.dp, if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isLockFocused = it.isFocused }.retroFocusEffect(isLockFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isLockFocused) Color.White else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen),
+                    border = BorderStroke(1.dp, if (isLockFocused) Color.Red else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen)
                 ) {
                     Text(if (viewModel.isQuickLocked.collectAsState().value) "UNLOCK NAV" else "LOCK NAV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
@@ -1462,17 +1516,18 @@ fun RetroSettingsMenu(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isLoadButtonFocused) phosphorGreen else Color.Transparent
+                            containerColor = if (isLoadButtonFocused) Color.Red else Color.Transparent
                         ),
                         modifier = Modifier
                             .weight(1f)
                             .onFocusChanged { isLoadButtonFocused = it.isFocused }
-                            .border(1.dp, phosphorGreen),
+                            .retroFocusEffect(isLoadButtonFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen)
+                            .clip(RoundedCornerShape(4.dp)),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
                             text = "IMPORT URL",
-                            color = if (isLoadButtonFocused) Color.Black else phosphorGreen,
+                            color = if (isLoadButtonFocused) Color.White else phosphorGreen,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -1482,17 +1537,18 @@ fun RetroSettingsMenu(
                     Button(
                         onClick = { filePickerLauncher.launch("*/*") },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isFileButtonFocused) amber else Color.Transparent
+                            containerColor = if (isFileButtonFocused) Color.Red else Color.Transparent
                         ),
                         modifier = Modifier
                             .weight(1f)
                             .onFocusChanged { isFileButtonFocused = it.isFocused }
-                            .border(1.dp, amber),
+                            .retroFocusEffect(isFileButtonFocused, focusedColor = Color.Red, unfocusedColor = amber)
+                            .clip(RoundedCornerShape(4.dp)),
                         shape = RoundedCornerShape(4.dp)
                     ) {
                         Text(
                             text = "LOCAL M3U",
-                            color = if (isFileButtonFocused) Color.Black else amber,
+                            color = if (isFileButtonFocused) Color.White else amber,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -1514,12 +1570,11 @@ fun RetroSettingsMenu(
             Spacer(modifier = Modifier.height(6.dp))
 
             // Active sources list
-            LazyColumn(
+            Column(
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth()
             ) {
-                items(playlists) { playlist ->
+                playlists.forEach { playlist ->
                     var isCardFocused by remember { mutableStateOf(false) }
                     var isDeleteFocused by remember { mutableStateOf(false) }
                     Row(
@@ -1532,13 +1587,8 @@ fun RetroSettingsMenu(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .border(
-                                    1.dp,
-                                    if (isCardFocused) phosphorGreen else phosphorGreen.copy(alpha = 0.3f),
-                                    RoundedCornerShape(4.dp)
-                                )
-                                .background(if (isCardFocused) Color(0xFF122212) else Color.Transparent, RoundedCornerShape(4.dp))
                                 .onFocusChanged { isCardFocused = it.isFocused }
+                                .retroFocusEffect(isCardFocused, focusedColor = Color.Red)
                                 .clickable {
                                     viewModel.selectPlaylist(playlist)
                                     onClose()
@@ -1549,7 +1599,7 @@ fun RetroSettingsMenu(
                             Column {
                                 Text(
                                     text = playlist.name.uppercase(),
-                                    color = phosphorGreen,
+                                    color = if (isCardFocused) Color.White else phosphorGreen,
                                     fontSize = 12.sp,
                                     fontFamily = FontFamily.Monospace,
                                     fontWeight = FontWeight.Bold
@@ -1557,7 +1607,7 @@ fun RetroSettingsMenu(
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
                                     text = playlist.url,
-                                    color = Color.Gray,
+                                    color = if (isCardFocused) Color.LightGray else Color.Gray,
                                     fontSize = 10.sp,
                                     fontFamily = FontFamily.Monospace,
                                     maxLines = 1,
@@ -1573,20 +1623,15 @@ fun RetroSettingsMenu(
                             onClick = { viewModel.deletePlaylist(playlist.id) },
                             modifier = Modifier
                                 .size(40.dp)
-                                .border(
-                                    1.dp,
-                                    if (isDeleteFocused) Color.Red else Color.Transparent,
-                                    RoundedCornerShape(4.dp)
-                                )
-                                .background(if (isDeleteFocused) Color(0xFF2A0C0C) else Color.Transparent, RoundedCornerShape(4.dp))
                                 .onFocusChanged { isDeleteFocused = it.isFocused }
+                                .retroFocusEffect(isDeleteFocused, focusedColor = Color.Red)
                                 .focusable()
                                 .testTag("delete_playlist_${playlist.id}")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Delete,
                                 contentDescription = "Wipe Playlist Source",
-                                tint = if (isDeleteFocused) Color.Red else Color.Red.copy(alpha = 0.6f),
+                                tint = if (isDeleteFocused) Color.White else Color.Red.copy(alpha = 0.6f),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -1625,17 +1670,17 @@ fun RetroSettingsMenu(
             Button(
                 onClick = { viewModel.toggleAspectRatio() },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAspectBtnFocused) phosphorGreen else Color.Transparent
+                    containerColor = if (isAspectBtnFocused) Color.Red else Color.Transparent
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { isAspectBtnFocused = it.isFocused }
-                    .border(1.dp, phosphorGreen),
+                    .retroFocusEffect(isAspectBtnFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen),
                 shape = RoundedCornerShape(4.dp)
             ) {
                 Text(
                     text = "CRT ASPECT RATIO: $aspectRatioMode",
-                    color = if (isAspectBtnFocused) Color.Black else phosphorGreen,
+                    color = if (isAspectBtnFocused) Color.White else phosphorGreen,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
@@ -1648,17 +1693,17 @@ fun RetroSettingsMenu(
             Button(
                 onClick = onClose,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isCloseBtnFocused) amber else Color.Transparent
+                    containerColor = if (isCloseBtnFocused) Color.Red else Color.Transparent
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { isCloseBtnFocused = it.isFocused }
-                    .border(1.dp, amber),
+                    .retroFocusEffect(isCloseBtnFocused, focusedColor = Color.Red, unfocusedColor = amber),
                 shape = RoundedCornerShape(4.dp)
             ) {
                 Text(
                     text = "CLOSE CONFIGURATION",
-                    color = if (isCloseBtnFocused) Color.Black else amber,
+                    color = if (isCloseBtnFocused) Color.White else amber,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold
                 )
@@ -1750,9 +1795,9 @@ fun RetroChannelDrawer(
                     
                     Box(
                         modifier = Modifier
-                            .background(if (isSelected) phosphorGreen else if (isCatFocused) Color(0xFF122212) else Color.Transparent)
-                            .border(1.dp, phosphorGreen)
+                            .background(if (isSelected) phosphorGreen else if (isCatFocused) Color.Red.copy(alpha = 0.2f) else Color.Transparent)
                             .onFocusChanged { isCatFocused = it.isFocused }
+                            .retroFocusEffect(isCatFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen)
                             .clickable { viewModel.setCategory(category) }
                             .focusable()
                             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1800,14 +1845,11 @@ fun RetroChannelDrawer(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
-                            .border(
-                                1.dp,
-                                if (isFocused) phosphorGreen else if (isPlaying) phosphorGreen.copy(alpha = 0.5f) else Color.Transparent
-                            )
-                            .background(
-                                if (isFocused) Color(0xFF122212) else if (isPlaying) Color(0xFF061106) else Color.Transparent
-                            )
                             .onFocusChanged { isFocused = it.isFocused }
+                            .retroFocusEffect(isFocused, focusedColor = Color.Red, unfocusedColor = if (isPlaying) phosphorGreen else Color.Transparent)
+                            .background(
+                                if (isPlaying) Color(0xFF061106) else Color.Transparent
+                            )
                             .onKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown) {
                                     when (event.key) {
@@ -2191,12 +2233,9 @@ fun GridViewItem(
     Box(
         modifier = Modifier
             .aspectRatio(16f / 10f)
-            .background(if (isFocused) phosphorGreen.copy(alpha = 0.2f) else Color.Black)
-            .border(
-                width = if (isFocused) 2.dp else 1.dp,
-                color = if (isFocused) phosphorGreen else Color.DarkGray
-            )
+            .background(if (isPlaying) phosphorGreen.copy(alpha = 0.1f) else Color.Black)
             .onFocusChanged { isFocused = it.isFocused }
+            .retroFocusEffect(isFocused, focusedColor = Color.Red, unfocusedColor = if (isPlaying) phosphorGreen else Color.DarkGray)
             .clickable { onClick() }
             .focusable()
     ) {
@@ -2578,6 +2617,144 @@ fun CrtPowerOnEffect(viewModel: IptvViewModel) {
                     center = center
                 )
             }
+        }
+    }
+}
+
+/**
+ * Retro-styled Player Controls Overlay (Pause/Resume & Quality indicator).
+ */
+@Composable
+fun PlayerControlsOverlay(
+    player: androidx.media3.exoplayer.ExoPlayer?,
+    onClose: () -> Unit
+) {
+    if (player == null) return
+
+    val phosphorGreen = Color(0xFF00FF00)
+    val amber = Color(0xFFFFB000)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.4f))
+            .clickable { onClose() },
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF050A05).copy(alpha = 0.9f))
+                .border(BorderStroke(1.dp, phosphorGreen))
+                .padding(32.dp)
+                .clickable(enabled = false) {}, // Prevent closing when clicking the panel itself
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = ">>> VIDEO PLAYBACK CONTROLS <<<",
+                color = phosphorGreen,
+                fontSize = 14.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Channel Name & Live Badge
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .background(Color.Red)
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Text("LIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = player.currentMediaItem?.mediaMetadata?.title?.toString() ?: "STREAMING...",
+                    color = phosphorGreen,
+                    fontSize = 18.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // PLAY / PAUSE (RESUME)
+                var isPlayPauseFocused by remember { mutableStateOf(false) }
+                val isPlaying = player.isPlaying
+                
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = {
+                            if (player.isPlaying) player.pause() else player.play()
+                        },
+                        modifier = Modifier
+                            .size(72.dp)
+                            .onFocusChanged { isPlayPauseFocused = it.isFocused }
+                            .retroFocusEffect(isPlayPauseFocused, focusedColor = Color.Red, shape = CircleShape)
+                            .focusable()
+                    ) {
+                        Text(
+                            text = if (isPlaying) "||" else "▶",
+                            color = if (isPlayPauseFocused) Color.White else phosphorGreen,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Text(
+                        text = if (isPlaying) "PAUSE" else "RESUME",
+                        color = if (isPlayPauseFocused) Color.Red else Color.Gray,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+
+                // QUALITY (BITRATE / TRACKS)
+                var isQualityFocused by remember { mutableStateOf(false) }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    IconButton(
+                        onClick = {
+                            // Placeholder for quality selector
+                        },
+                        modifier = Modifier
+                            .size(72.dp)
+                            .onFocusChanged { isQualityFocused = it.isFocused }
+                            .retroFocusEffect(isQualityFocused, focusedColor = Color.Red, shape = CircleShape)
+                            .focusable()
+                    ) {
+                        Text(
+                            text = "HD",
+                            color = if (isQualityFocused) Color.White else amber,
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Text(
+                        text = "QUALITY",
+                        color = if (isQualityFocused) Color.Red else Color.Gray,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+            
+            Text(
+                text = "[ PRESS BACK TO DISMISS ]",
+                color = Color.DarkGray,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace
+            )
         }
     }
 }
