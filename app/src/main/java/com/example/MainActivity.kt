@@ -90,6 +90,13 @@ class MainActivity : ComponentActivity() {
     private var showExitDialog by mutableStateOf(false)
     private var crtState by mutableStateOf(CrtScreenState.IDLE)
 
+    // Retro Bitmap Fonts
+    private val retroFonts = listOf(
+        FontFamily.Monospace,
+        FontFamily.Serif,
+        FontFamily.SansSerif
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -338,8 +345,11 @@ class MainActivity : ComponentActivity() {
         if (event == null) return super.onKeyDown(keyCode, event)
         if (crtState != CrtScreenState.IDLE) return true
 
+        val isLocked = viewModel.isQuickLocked.value
+
         when (keyCode) {
             KeyEvent.KEYCODE_DPAD_UP -> {
+                if (isLocked) return true
                 if (showSettings || showExitDialog || showChannelGuide) {
                     return super.onKeyDown(keyCode, event)
                 } else {
@@ -348,6 +358,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
+                if (isLocked) return true
                 if (showSettings || showExitDialog || showChannelGuide) {
                     return super.onKeyDown(keyCode, event)
                 } else {
@@ -356,12 +367,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
+                if (isLocked) return true
                 if (!showSettings && !showExitDialog && !showChannelGuide) {
                     showChannelGuide = true
                     return true
                 }
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                if (isLocked) return true
                 if (!showSettings && !showExitDialog && !showChannelGuide) {
                     showSettings = true
                     return true
@@ -370,6 +383,7 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_0, KeyEvent.KEYCODE_1, KeyEvent.KEYCODE_2, KeyEvent.KEYCODE_3,
             KeyEvent.KEYCODE_4, KeyEvent.KEYCODE_5, KeyEvent.KEYCODE_6, KeyEvent.KEYCODE_7,
             KeyEvent.KEYCODE_8, KeyEvent.KEYCODE_9 -> {
+                if (isLocked) return true
                 if (!showSettings && !showExitDialog) {
                     val digit = keyCode - KeyEvent.KEYCODE_0
                     viewModel.pressNumericKey(digit)
@@ -379,6 +393,7 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_NUMPAD_0, KeyEvent.KEYCODE_NUMPAD_1, KeyEvent.KEYCODE_NUMPAD_2, KeyEvent.KEYCODE_NUMPAD_3,
             KeyEvent.KEYCODE_NUMPAD_4, KeyEvent.KEYCODE_NUMPAD_5, KeyEvent.KEYCODE_NUMPAD_6, KeyEvent.KEYCODE_NUMPAD_7,
             KeyEvent.KEYCODE_NUMPAD_8, KeyEvent.KEYCODE_NUMPAD_9 -> {
+                if (isLocked) return true
                 if (!showSettings && !showExitDialog) {
                     val digit = keyCode - KeyEvent.KEYCODE_NUMPAD_0
                     viewModel.pressNumericKey(digit)
@@ -387,15 +402,8 @@ class MainActivity : ComponentActivity() {
             }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 if (!showSettings && !showExitDialog && !showChannelGuide) {
-                    // Immediate channel confirmation if user is typing a channel index
-                    if (viewModel.inputBufferText.value.isNotEmpty()) {
-                        viewModel.commitNumpadInput()
-                        return true
-                    } else {
-                        // Toggle Channel Guide / Settings Drawer
-                        showChannelGuide = true
-                        return true
-                    }
+                    event.startTracking()
+                    return true
                 }
             }
             KeyEvent.KEYCODE_VOLUME_UP -> {
@@ -469,6 +477,30 @@ class MainActivity : ComponentActivity() {
             }
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            if (event?.isTracking == true && !event.isLongPress) {
+                if (viewModel.inputBufferText.value.isNotEmpty()) {
+                    viewModel.commitNumpadInput()
+                } else {
+                    showChannelGuide = true
+                }
+                return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    override fun onKeyLongPress(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            viewModel.toggleQuickLock()
+            val state = if (viewModel.isQuickLocked.value) "LOCKED" else "UNLOCKED"
+            Toast.makeText(this, "REMOTE NAVIGATION $state", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        return super.onKeyLongPress(keyCode, event)
     }
 }
 
@@ -749,6 +781,12 @@ fun AudioSpectrumVisualizer(
     }
 }
 
+@Composable
+fun Number.vw(): androidx.compose.ui.unit.Dp = (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp * this.toFloat() / 100f).dp
+
+@Composable
+fun Number.vh(): androidx.compose.ui.unit.Dp = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * this.toFloat() / 100f).dp
+
 /**
  * Renders the OSD overlays (Monospace font channel indexes, block volumes, and auto-tuning).
  */
@@ -767,8 +805,14 @@ fun IptvOsdOverlay(
     val signalStrength by viewModel.signalStrength.collectAsState()
     val sleepTimer by viewModel.sleepTimerMinutes.collectAsState()
     val viewModelTime by viewModel.currentTime.collectAsState()
+    val isLocked by viewModel.isQuickLocked.collectAsState()
+    val fontIndex by viewModel.selectedFontIndex.collectAsState()
 
-    val monospaceFont = FontFamily.Monospace
+    val currentFont = when(fontIndex) {
+        1 -> FontFamily.Serif
+        2 -> FontFamily.SansSerif
+        else -> FontFamily.Monospace
+    }
 
     var osdVisible by remember { mutableStateOf(false) }
 
@@ -783,31 +827,41 @@ fun IptvOsdOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(28.dp)
+            .padding(4.vw())
     ) {
         // Top-Right: Real-time Clock (7-segment style)
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .offset(y = if (activeChannel != null && !isTuning) 50.dp else 0.dp) // Avoid overlapping signal bars
+                .offset(y = if (activeChannel != null && !isTuning) 8.vh() else 0.dp) // Avoid overlapping signal bars
                 .background(Color.Black.copy(alpha = 0.7f))
                 .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.3f))
-                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .padding(horizontal = 2.vw(), vertical = 0.5.vh())
         ) {
-            Text(
-                text = viewModelTime,
-                color = Color(0xFF00FF00),
-                fontFamily = monospaceFont,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                style = androidx.compose.ui.text.TextStyle(
-                    shadow = androidx.compose.ui.graphics.Shadow(
-                        color = Color(0xFF00FF00),
-                        offset = androidx.compose.ui.geometry.Offset(0f, 0f),
-                        blurRadius = 8f
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isLocked) {
+                    Text(
+                        text = "🔒",
+                        color = Color.Red,
+                        fontSize = 1.8.vh().value.sp,
+                        modifier = Modifier.padding(end = 1.vw())
+                    )
+                }
+                Text(
+                    text = viewModelTime,
+                    color = Color(0xFF00FF00),
+                    fontFamily = currentFont,
+                    fontSize = 2.5.vh().value.sp,
+                    fontWeight = FontWeight.Bold,
+                    style = androidx.compose.ui.text.TextStyle(
+                        shadow = androidx.compose.ui.graphics.Shadow(
+                            color = Color(0xFF00FF00),
+                            offset = androidx.compose.ui.geometry.Offset(0f, 0f),
+                            blurRadius = 8f
+                        )
                     )
                 )
-            )
+            }
         }
 
         // Top-Left: Sleep Timer
@@ -816,13 +870,13 @@ fun IptvOsdOverlay(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(8.dp)
+                    .padding(1.vw())
             ) {
                 Text(
                     text = "SLEEP: $sleepTimer MIN",
                     color = Color(0xFFFFB000), // Amber
-                    fontFamily = monospaceFont,
-                    fontSize = 14.sp,
+                    fontFamily = currentFont,
+                    fontSize = 1.8.vh().value.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -834,26 +888,26 @@ fun IptvOsdOverlay(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(8.dp),
+                    .padding(1.vw()),
                 horizontalAlignment = Alignment.End
             ) {
                 Text(
                     text = "SIGNAL",
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 10.sp,
+                    fontFamily = currentFont,
+                    fontSize = 1.2.vh().value.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
                     val bars = 5
                     for (i in 1..bars) {
-                        val barHeight = 4 + (i * 4)
+                        val barHeight = 0.5.vh() + (0.5.vh() * i.toFloat())
                         val isActive = signalStrength >= (i.toFloat() / bars)
                         Box(
                             modifier = Modifier
-                                .width(6.dp)
-                                .height(barHeight.dp)
-                                .padding(horizontal = 1.dp)
+                                .width(0.8.vw())
+                                .height(barHeight)
+                                .padding(horizontal = 0.1.vw())
                                 .background(if (isActive) Color(0xFF00FF00) else Color.DarkGray)
                         )
                     }
@@ -861,8 +915,8 @@ fun IptvOsdOverlay(
                 Text(
                     text = "${(signalStrength * 100).toInt()}%",
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 10.sp
+                    fontFamily = currentFont,
+                    fontSize = 1.2.vh().value.sp
                 )
             }
         }
@@ -873,38 +927,38 @@ fun IptvOsdOverlay(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(8.dp),
+                    .padding(1.vw()),
                 horizontalAlignment = Alignment.End
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "AV-1",
                         color = Color(0xFF00FF00),
-                        fontFamily = monospaceFont,
-                        fontSize = 18.sp,
+                        fontFamily = currentFont,
+                        fontSize = 2.2.vh().value.sp,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 1.vw())
                     )
                     Text(
                         text = viewModelTime.take(5), // Show HH:mm only
                         color = Color(0xFF00FF00),
-                        fontFamily = monospaceFont,
-                        fontSize = 18.sp,
+                        fontFamily = currentFont,
+                        fontSize = 2.2.vh().value.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Text(
                     text = "CH ${String.format("%02d", activeChannel!!.channelNumber)}",
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 24.sp,
+                    fontFamily = currentFont,
+                    fontSize = 3.vh().value.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = activeChannel!!.name.uppercase(),
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 14.sp,
+                    fontFamily = currentFont,
+                    fontSize = 1.8.vh().value.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -912,36 +966,36 @@ fun IptvOsdOverlay(
                     Text(
                         text = activeChannel!!.groupTitle!!.uppercase(),
                         color = Color(0xFF00AA00), // Slightly darker green for description
-                        fontFamily = monospaceFont,
-                        fontSize = 12.sp,
+                        fontFamily = currentFont,
+                        fontSize = 1.5.vh().value.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 2.dp)
+                        modifier = Modifier.padding(top = 0.2.vh())
                     )
                 }
                 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(0.8.vh()))
                 
                 // EPG "Now Playing" block
                 Column(
                     modifier = Modifier
                         .background(Color(0xFF0A1F0A).copy(alpha = 0.8f))
                         .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.5f))
-                        .padding(6.dp),
+                        .padding(0.8.vw()),
                     horizontalAlignment = Alignment.End
                 ) {
                     Text(
                         text = "NOW PLAYING",
                         color = Color(0xFFFFB000), // Amber for EPG header
-                        fontFamily = monospaceFont,
-                        fontSize = 10.sp,
+                        fontFamily = currentFont,
+                        fontSize = 1.2.vh().value.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "NO EPG DATA AVAILABLE", // Placeholder for XMLTV fetcher
                         color = Color(0xFF00FF00),
-                        fontFamily = monospaceFont,
-                        fontSize = 12.sp,
+                        fontFamily = currentFont,
+                        fontSize = 1.5.vh().value.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -955,14 +1009,14 @@ fun IptvOsdOverlay(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .background(Color.Black.copy(alpha = 0.85f))
-                    .border(2.dp, Color(0xFF00FF00), RoundedCornerShape(4.dp))
-                    .padding(24.dp)
+                    .border(2.dp, Color(0xFF00FF00), RoundedCornerShape(0.4.vw()))
+                    .padding(3.vw())
             ) {
                 Text(
                     text = "TUNING CH: $numpadBuffer-",
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 32.sp,
+                    fontFamily = currentFont,
+                    fontSize = 4.vh().value.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -975,23 +1029,23 @@ fun IptvOsdOverlay(
                     .align(Alignment.BottomStart)
                     .background(Color.Black.copy(alpha = 0.75f))
                     .border(1.dp, Color(0xFF00FF00))
-                    .padding(12.dp)
+                    .padding(1.5.vw())
             ) {
                 Text(
                     text = "VOLUME: $volumeLevel/10",
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 14.sp,
+                    fontFamily = currentFont,
+                    fontSize = 1.8.vh().value.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 4.dp)
+                    modifier = Modifier.padding(bottom = 0.5.vh())
                 )
                 Row {
                     for (i in 1..10) {
                         Text(
                             text = if (i <= volumeLevel) "▰" else "▱",
                             color = Color(0xFF00FF00),
-                            fontSize = 18.sp,
-                            fontFamily = monospaceFont
+                            fontSize = 2.2.vh().value.sp,
+                            fontFamily = currentFont
                         )
                     }
                 }
@@ -1005,26 +1059,26 @@ fun IptvOsdOverlay(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth(0.8f)
                     .background(Color.Black.copy(alpha = 0.85f))
-                    .border(2.dp, Color(0xFFFFFF00), RoundedCornerShape(8.dp))
-                    .padding(16.dp),
+                    .border(2.dp, Color(0xFFFFFF00), RoundedCornerShape(1.vw()))
+                    .padding(2.vw()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     text = tuningStatus,
                     color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 16.sp,
+                    fontFamily = currentFont,
+                    fontSize = 2.vh().value.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(1.5.vh()))
 
                 // Frequency pointer track (45.25 MHz to 800 MHz)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(20.dp)
+                        .height(2.5.vh())
                         .background(Color(0xFF112211))
                         .border(1.dp, Color(0xFF00FF00))
                 ) {
@@ -1037,15 +1091,15 @@ fun IptvOsdOverlay(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(0.8.vh()))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("VL (45.25 MHz)", color = Color(0xFF888888), fontSize = 10.sp, fontFamily = monospaceFont)
-                    Text("VH (175.25 MHz)", color = Color(0xFF888888), fontSize = 10.sp, fontFamily = monospaceFont)
-                    Text("UHF (800.00 MHz)", color = Color(0xFF888888), fontSize = 10.sp, fontFamily = monospaceFont)
+                    Text("VL (45.25 MHz)", color = Color(0xFF888888), fontSize = 1.2.vh().value.sp, fontFamily = currentFont)
+                    Text("VH (175.25 MHz)", color = Color(0xFF888888), fontSize = 1.2.vh().value.sp, fontFamily = currentFont)
+                    Text("UHF (800.00 MHz)", color = Color(0xFF888888), fontSize = 1.2.vh().value.sp, fontFamily = currentFont)
                 }
             }
         }
@@ -1285,6 +1339,42 @@ fun RetroSettingsMenu(
                     border = BorderStroke(1.dp, phosphorGreen)
                 ) {
                     Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // INTERFACE SETTINGS
+            Text(
+                text = "INTERFACE CUSTOMIZATION:",
+                color = amber,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { viewModel.cycleFont() },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
+                    border = BorderStroke(1.dp, phosphorGreen)
+                ) {
+                    val fontIndex by viewModel.selectedFontIndex.collectAsState()
+                    val fontName = when(fontIndex) {
+                        1 -> "SERIF"
+                        2 -> "SANS"
+                        else -> "MONO"
+                    }
+                    Text("FONT: $fontName", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+                OutlinedButton(
+                    onClick = { viewModel.toggleQuickLock() },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen),
+                    border = BorderStroke(1.dp, if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen)
+                ) {
+                    Text(if (viewModel.isQuickLocked.collectAsState().value) "UNLOCK NAV" else "LOCK NAV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                 }
             }
 

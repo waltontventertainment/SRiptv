@@ -114,6 +114,12 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentTime = MutableStateFlow("")
     val currentTime: StateFlow<String> = _currentTime.asStateFlow()
 
+    private val _isQuickLocked = MutableStateFlow(false)
+    val isQuickLocked: StateFlow<Boolean> = _isQuickLocked.asStateFlow()
+
+    private val _selectedFontIndex = MutableStateFlow(0)
+    val selectedFontIndex: StateFlow<Int> = _selectedFontIndex.asStateFlow()
+
     // Multi-digit channel input buffer
     private val _inputBufferText = MutableStateFlow("")
     val inputBufferText: StateFlow<String> = _inputBufferText.asStateFlow()
@@ -297,6 +303,18 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun dismissPowerOnEffect() {
         _isPowerOnEffectActive.value = false
+    }
+
+    fun toggleQuickLock() {
+        _isQuickLocked.value = !_isQuickLocked.value
+    }
+
+    fun cycleFont() {
+        _selectedFontIndex.value = (_selectedFontIndex.value + 1) % 3
+    }
+
+    private fun playWhiteNoiseSound() {
+        // Sound logic omitted for now or can be added with SoundPool
     }
 
     /**
