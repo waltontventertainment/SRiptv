@@ -65,6 +65,55 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _volumeDisplayVisible = MutableStateFlow(false)
     val volumeDisplayVisible: StateFlow<Boolean> = _volumeDisplayVisible.asStateFlow()
 
+    // New Retro States
+    private val _signalStrength = MutableStateFlow(0.85f)
+    val signalStrength: StateFlow<Float> = _signalStrength.asStateFlow()
+
+    private val _sleepTimerMinutes = MutableStateFlow<Int?>(null)
+    val sleepTimerMinutes: StateFlow<Int?> = _sleepTimerMinutes.asStateFlow()
+
+    private val _isKeyboardVisible = MutableStateFlow(false)
+    val isKeyboardVisible: StateFlow<Boolean> = _isKeyboardVisible.asStateFlow()
+
+    private val _keyboardInput = MutableStateFlow("")
+    val keyboardInput: StateFlow<String> = _keyboardInput.asStateFlow()
+
+    private val _technicalStatsVisible = MutableStateFlow(false)
+    val technicalStatsVisible: StateFlow<Boolean> = _technicalStatsVisible.asStateFlow()
+
+    private val _streamResolution = MutableStateFlow("N/A")
+    val streamResolution: StateFlow<String> = _streamResolution.asStateFlow()
+
+    private val _streamCodec = MutableStateFlow("N/A")
+    val streamCodec: StateFlow<String> = _streamCodec.asStateFlow()
+
+    private val _streamBitrate = MutableStateFlow("0 KBPS")
+    val streamBitrate: StateFlow<String> = _streamBitrate.asStateFlow()
+
+    private val _isPinEntryVisible = MutableStateFlow(false)
+    val isPinEntryVisible: StateFlow<Boolean> = _isPinEntryVisible.asStateFlow()
+
+    private val _pinBuffer = MutableStateFlow("")
+    val pinBuffer: StateFlow<String> = _pinBuffer.asStateFlow()
+
+    private val _isChannelLocked = MutableStateFlow(false)
+    val isChannelLocked: StateFlow<Boolean> = _isChannelLocked.asStateFlow()
+
+    private val _selectedCategory = MutableStateFlow<String?>(null)
+    val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
+
+    private val _isPowerOnEffectActive = MutableStateFlow(true)
+    val isPowerOnEffectActive: StateFlow<Boolean> = _isPowerOnEffectActive.asStateFlow()
+
+    private val _isGridViewVisible = MutableStateFlow(false)
+    val isGridViewVisible: StateFlow<Boolean> = _isGridViewVisible.asStateFlow()
+
+    private val _previousChannel = MutableStateFlow<IPTVChannel?>(null)
+    val previousChannel: StateFlow<IPTVChannel?> = _previousChannel.asStateFlow()
+
+    private val _currentTime = MutableStateFlow("")
+    val currentTime: StateFlow<String> = _currentTime.asStateFlow()
+
     // Multi-digit channel input buffer
     private val _inputBufferText = MutableStateFlow("")
     val inputBufferText: StateFlow<String> = _inputBufferText.asStateFlow()
@@ -88,6 +137,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private var numpadDebounceJob: Job? = null
     private var staticOverlayJob: Job? = null
     private var volumeHideJob: Job? = null
+    private var sleepTimerJob: Job? = null
 
     init {
         val database = Room.databaseBuilder(
@@ -121,7 +171,132 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 restoreLastWatchedChannel()
             }
+
+            // Start signal fluctuation loop
+            startSignalFluctuation()
+            
+            // Start Clock loop
+            startClockLoop()
         }
+    }
+
+    private fun startClockLoop() {
+        viewModelScope.launch {
+            val sdf = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            while (true) {
+                _currentTime.value = sdf.format(java.util.Date())
+                delay(1000)
+            }
+        }
+    }
+
+    fun toggleGridView() {
+        _isGridViewVisible.value = !_isGridViewVisible.value
+    }
+
+    fun recallChannel() {
+        _previousChannel.value?.let { prev ->
+            setActiveChannel(prev)
+        }
+    }
+
+    /**
+     * Periodically fluctuates signal strength for retro realism.
+     */
+    private fun startSignalFluctuation() {
+        viewModelScope.launch {
+            while (true) {
+                val current = _signalStrength.value
+                val noise = ((0..10).random() - 5) / 100f // -0.05 to +0.05
+                _signalStrength.value = (current + noise).coerceIn(0.4f, 1.0f)
+                delay((1000..3000).random().toLong())
+            }
+        }
+    }
+
+    /**
+     * Sleep timer logic
+     */
+    fun setSleepTimer(minutes: Int?) {
+        sleepTimerJob?.cancel()
+        _sleepTimerMinutes.value = minutes
+        if (minutes != null && minutes > 0) {
+            sleepTimerJob = viewModelScope.launch {
+                var remaining = minutes
+                while (remaining > 0) {
+                    delay(60000) // 1 minute
+                    remaining--
+                    _sleepTimerMinutes.value = remaining
+                }
+                // Time's up: stop playback
+                _activeChannel.value = null
+                _isStaticActive.value = true
+                _sleepTimerMinutes.value = null
+            }
+        }
+    }
+
+    /**
+     * Keyboard controls
+     */
+    fun toggleKeyboard(visible: Boolean) {
+        _isKeyboardVisible.value = visible
+        if (!visible) _keyboardInput.value = ""
+    }
+
+    fun updateKeyboardInput(input: String) {
+        _keyboardInput.value = input
+    }
+
+    /**
+     * Technical Stats controls
+     */
+    fun toggleTechnicalStats() {
+        _technicalStatsVisible.value = !_technicalStatsVisible.value
+    }
+
+    fun updateStreamStats(width: Int, height: Int, codec: String, bitrate: String) {
+        _streamResolution.value = if (width > 0) "${width}X${height}" else "N/A"
+        _streamCodec.value = codec.uppercase()
+        _streamBitrate.value = bitrate.uppercase()
+    }
+
+    /**
+     * Parental Control logic
+     */
+    private fun checkChannelLock(channel: IPTVChannel) {
+        val group = channel.groupTitle?.lowercase() ?: ""
+        val isRestricted = group.contains("adult") || group.contains("xxx") || group.contains("restricted")
+        _isChannelLocked.value = isRestricted
+    }
+
+    fun pressPinDigit(digit: Int) {
+        if (_pinBuffer.value.length >= 4) return
+        _pinBuffer.value += digit
+        if (_pinBuffer.value.length == 4) {
+            viewModelScope.launch {
+                delay(300)
+                if (_pinBuffer.value == "0000") { // Hardcoded default PIN
+                    _isChannelLocked.value = false
+                    _isPinEntryVisible.value = false
+                }
+                _pinBuffer.value = ""
+            }
+        }
+    }
+
+    /**
+     * Category filtering
+     */
+    fun setCategory(category: String?) {
+        _selectedCategory.value = category
+    }
+
+    /**
+     * Power-on effect
+     */
+    fun dismissPowerOnEffect() {
+        _isPowerOnEffectActive.value = false
     }
 
     /**
@@ -134,7 +309,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             _isStaticActive.value = true
             playWhiteNoiseSound()
 
-            val currentChannels = channels.value
+            val currentChannels = repository.getAllChannelsNow()
             val totalSteps = 40
             val startFreq = 45.25f
             val endFreq = 800.00f
@@ -193,7 +368,18 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setActiveChannel(channel: IPTVChannel) {
         viewModelScope.launch {
+            val current = _activeChannel.value
+            if (current != null && current.id != channel.id) {
+                _previousChannel.value = current
+            }
+            
+            checkChannelLock(channel)
             _activeChannel.value = channel
+            
+            // If locked, show PIN entry immediately
+            if (_isChannelLocked.value) {
+                _isPinEntryVisible.value = true
+            }
             
             // Look up the playlist to get its source URL
             val playlist = playlists.value.find { it.id == channel.playlistId }
@@ -231,6 +417,12 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             "FILL" -> "FIT"
             "FIT" -> "ZOOM"
             else -> "FILL"
+        }
+    }
+
+    fun toggleFavorite(channel: IPTVChannel) {
+        viewModelScope.launch {
+            repository.toggleFavorite(channel)
         }
     }
 

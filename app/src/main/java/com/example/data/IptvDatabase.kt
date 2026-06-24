@@ -30,7 +30,8 @@ data class IPTVChannel(
     val url: String,
     val logoUrl: String? = null,
     val groupTitle: String? = null,
-    val channelNumber: Int
+    val channelNumber: Int,
+    val isFavorite: Boolean = false
 )
 
 @Dao
@@ -46,6 +47,9 @@ interface IptvDao {
 
     @Query("SELECT * FROM channels ORDER BY channelNumber ASC")
     fun getAllChannels(): Flow<List<IPTVChannel>>
+
+    @Query("SELECT * FROM channels ORDER BY channelNumber ASC")
+    suspend fun getAllChannelsNow(): List<IPTVChannel>
 
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY channelNumber ASC")
     suspend fun getChannelsByPlaylist(playlistId: Int): List<IPTVChannel>
@@ -64,11 +68,14 @@ interface IptvDao {
 
     @Query("SELECT * FROM channels WHERE channelNumber = :num LIMIT 1")
     suspend fun getChannelByNumber(num: Int): IPTVChannel?
+
+    @Update
+    suspend fun updateChannel(channel: IPTVChannel)
 }
 
 @Database(
     entities = [M3UPlaylist::class, IPTVChannel::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class IptvDatabase : RoomDatabase() {

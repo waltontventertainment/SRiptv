@@ -15,6 +15,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
@@ -25,11 +26,21 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import coil.compose.AsyncImage
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -105,6 +116,9 @@ class MainActivity : ComponentActivity() {
                     val isStreamError by viewModel.isStreamError.collectAsState()
                     val streamErrorMessage by viewModel.streamErrorMessage.collectAsState()
                     val isStreamBuffering by viewModel.isStreamBuffering.collectAsState()
+                    val isKeyboardVisible by viewModel.isKeyboardVisible.collectAsState()
+
+                    val isGridViewVisible by viewModel.isGridViewVisible.collectAsState()
 
                     if (activeChannel != null && crtState == CrtScreenState.IDLE) {
                         AndroidVideoPlayer(
@@ -124,6 +138,14 @@ class MainActivity : ComponentActivity() {
                     } else if (activeChannel == null && !isStaticActive) {
                         // Empty State / Initial screen
                         EmptyTVState()
+                    }
+
+                    // Grid View Overlay
+                    if (isGridViewVisible) {
+                        RetroGridView(
+                            viewModel = viewModel,
+                            onClose = { viewModel.toggleGridView() }
+                        )
                     }
 
                     // 2. Retro Static Noise overlay (ঝিরঝির)
@@ -206,11 +228,40 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    // 2d. Retro Audio Spectrum Visualizer
+                    Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.BottomStart) {
+                        AudioSpectrumVisualizer(
+                            isBuffering = isStreamBuffering,
+                            isError = isStreamError || isStaticActive,
+                            isPlaying = activeChannel != null
+                        )
+                    }
+
+                    // 2e. Technical Stats Overlay
+                    TechnicalStatsOverlay(viewModel = viewModel)
+
+                    // 2f. Parental PIN Entry
+                    PinEntryDialog(viewModel = viewModel)
+
+                    // 2g. CRT Power-On Effect
+                    CrtPowerOnEffect(viewModel = viewModel)
+
                     // 3. Vintage CRT Scanline and Screen bulge filters
                     CrtScanlineOverlay()
 
                     // 4. Custom Retro OSD Indicators
                     IptvOsdOverlay(viewModel = viewModel)
+
+                    // 4b. Tuning Static Transition Effect
+                    TuningStaticOverlay(isActive = isStaticActive)
+
+                    // 4c. Retro Search Keyboard
+                    if (isKeyboardVisible) {
+                        RetroKeyboard(
+                            viewModel = viewModel,
+                            onClose = { viewModel.toggleKeyboard(false) }
+                        )
+                    }
 
                     // 5. Gear icon (top gear Settings trigger)
                     SettingsTriggerButton(
@@ -261,7 +312,10 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // 9. CRT Screen Off Effect overlay
+                    // 9. Playlist Importing overlay
+                    PlaylistImportingOverlay(viewModel = viewModel)
+
+                    // 10. CRT Screen Off Effect overlay
                     CrtScreenOffOverlay(
                         state = crtState,
                         onAnimationFinished = {
@@ -352,6 +406,45 @@ class MainActivity : ComponentActivity() {
                 viewModel.adjustVolume(increment = false)
                 return true
             }
+            KeyEvent.KEYCODE_INFO, KeyEvent.KEYCODE_MENU, KeyEvent.KEYCODE_M -> {
+                if (viewModel.isGridViewVisible.value) {
+                    viewModel.toggleGridView()
+                    viewModel.toggleTechnicalStats() // Tech stats on
+                } else if (viewModel.technicalStatsVisible.value) {
+                    viewModel.toggleTechnicalStats() // Tech stats off
+                } else {
+                    viewModel.toggleGridView() // Grid view on
+                }
+                return true
+            }
+            KeyEvent.KEYCODE_LAST_CHANNEL -> {
+                viewModel.recallChannel()
+                return true
+            }
+            KeyEvent.KEYCODE_PROG_RED -> {
+                // Cycle sleep timer: null -> 30 -> 60 -> 90 -> null
+                val current = viewModel.sleepTimerMinutes.value
+                val next = when (current) {
+                    null -> 30
+                    30 -> 60
+                    60 -> 90
+                    else -> null
+                }
+                viewModel.setSleepTimer(next)
+                return true
+            }
+            KeyEvent.KEYCODE_PROG_GREEN -> {
+                viewModel.toggleKeyboard(!viewModel.isKeyboardVisible.value)
+                return true
+            }
+            KeyEvent.KEYCODE_PROG_YELLOW -> {
+                viewModel.updateKeyboardInput("")
+                return true
+            }
+            KeyEvent.KEYCODE_PROG_BLUE -> {
+                viewModel.toggleAspectRatio()
+                return true
+            }
             KeyEvent.KEYCODE_BACK -> {
                 if (showSettings) {
                     showSettings = false
@@ -359,11 +452,18 @@ class MainActivity : ComponentActivity() {
                 } else if (showChannelGuide) {
                     showChannelGuide = false
                     return true
+                } else if (viewModel.isGridViewVisible.value) {
+                    viewModel.toggleGridView()
+                    return true
+                } else if (viewModel.technicalStatsVisible.value) {
+                    viewModel.toggleTechnicalStats()
+                    return true
                 } else if (showExitDialog) {
                     showExitDialog = false
                     return true
                 } else {
-                    showExitDialog = true
+                    // Recall feature mapped to Back when no menus are open
+                    viewModel.recallChannel()
                     return true
                 }
             }
@@ -398,9 +498,9 @@ fun AndroidVideoPlayer(
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
                     2500, // minBufferMs
-                    5000, // maxBufferMs
+                    10000, // maxBufferMs
                     500,  // bufferForPlaybackMs
-                    1000  // bufferForPlaybackAfterRebufferMs
+                    2000  // bufferForPlaybackAfterRebufferMs
                 )
                 .build()
 
@@ -411,15 +511,36 @@ fun AndroidVideoPlayer(
             val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
                 .setDataSourceFactory(dataSourceFactory)
 
+            val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
+                .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+                .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build()
+
             val player = ExoPlayer.Builder(context)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
+                .setAudioAttributes(audioAttributes, true)
+                .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK)
                 .build().apply {
                     playWhenReady = true
                     repeatMode = ExoPlayer.REPEAT_MODE_ONE
+                    videoScalingMode = androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                 }
 
+            var retryCount = 0
+            val maxRetries = 3
+
             player.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                    val format = player.videoFormat
+                    val codec = format?.sampleMimeType?.substringAfterLast("/") ?: "N/A"
+                    val bitrateKbps = if (format != null && format.bitrate != androidx.media3.common.Format.NO_VALUE) {
+                        "${format.bitrate / 1000} KBPS"
+                    } else "N/A"
+                    viewModel.updateStreamStats(videoSize.width, videoSize.height, codec, bitrateKbps)
+                }
+
                 override fun onPlaybackStateChanged(state: Int) {
                     when (state) {
                         androidx.media3.common.Player.STATE_BUFFERING -> {
@@ -429,6 +550,7 @@ fun AndroidVideoPlayer(
                         androidx.media3.common.Player.STATE_READY -> {
                             viewModel.setStreamBuffering(false)
                             viewModel.setStreamError(false)
+                            retryCount = 0
                         }
                         androidx.media3.common.Player.STATE_ENDED -> {
                             viewModel.setStreamBuffering(false)
@@ -438,15 +560,22 @@ fun AndroidVideoPlayer(
 
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     android.util.Log.e("AndroidVideoPlayer", "ExoPlayer error: ${error.message}", error)
-                    viewModel.setStreamBuffering(false)
-                    val cleanMsg = when (error.errorCode) {
-                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "CONNECTION TIMEOUT"
-                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "BAD HTTP STATUS"
-                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "UNSUPPORTED CODEC"
-                        else -> "SIGNAL INTERRUPTED"
+                    if (retryCount < maxRetries) {
+                        retryCount++
+                        android.util.Log.d("AndroidVideoPlayer", "Retrying stream (Attempt $retryCount of $maxRetries)...")
+                        viewModel.setStreamError(true, "RECONNECTING... ($retryCount/$maxRetries)")
+                        player.prepare()
+                    } else {
+                        viewModel.setStreamBuffering(false)
+                        val cleanMsg = when (error.errorCode) {
+                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "CONNECTION TIMEOUT"
+                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "BAD HTTP STATUS"
+                            androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "UNSUPPORTED CODEC"
+                            else -> "SIGNAL INTERRUPTED"
+                        }
+                        viewModel.setStreamError(true, "$cleanMsg (${error.errorCodeName})")
                     }
-                    viewModel.setStreamError(true, "$cleanMsg (${error.errorCodeName})")
                 }
             })
 
@@ -490,6 +619,137 @@ fun AndroidVideoPlayer(
 }
 
 /**
+ * Full-screen visual loading state with percentage indicator
+ * Appears when playlist is being fetched/parsed
+ */
+@Composable
+fun PlaylistImportingOverlay(viewModel: IptvViewModel) {
+    val isImporting by viewModel.isImporting.collectAsState()
+    val importProgressPercent by viewModel.importProgressPercent.collectAsState()
+    val importStatus by viewModel.importStatus.collectAsState()
+    val importChannelCount by viewModel.importChannelCount.collectAsState()
+
+    if (isImporting) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.85f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.8f)
+                    .border(2.dp, Color(0xFF00FF00), RoundedCornerShape(8.dp))
+                    .background(Color(0xFF0A1A0A))
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "FETCHING PLAYLIST DATA",
+                    color = Color(0xFF00FF00),
+                    fontSize = 18.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text(
+                    text = "$importProgressPercent%",
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                val totalTicks = 20
+                val filledTicks = (importProgressPercent * totalTicks / 100).coerceIn(0, totalTicks)
+                val emptyTicks = totalTicks - filledTicks
+                val progressBarString = "[" + "█".repeat(filledTicks) + "░".repeat(emptyTicks) + "]"
+                
+                Text(
+                    text = progressBarString,
+                    color = Color(0xFF00FF00),
+                    fontSize = 16.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                Text(
+                    text = importStatus.uppercase(),
+                    color = Color.Yellow,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                
+                Spacer(modifier = Modifier.height(4.dp))
+                
+                Text(
+                    text = "CHANNELS FOUND: $importChannelCount",
+                    color = Color(0xFF00FF00),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Retro Audio Spectrum Visualizer
+ */
+@Composable
+fun AudioSpectrumVisualizer(
+    modifier: Modifier = Modifier,
+    isBuffering: Boolean,
+    isError: Boolean,
+    isPlaying: Boolean // Can be inferred from not buffering and not erroring, plus active channel
+) {
+    if (isBuffering || isError || !isPlaying) return
+
+    val barCount = 12
+    val randoms = remember { List(barCount) { mutableStateOf(0f) } }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            for (i in 0 until barCount) {
+                // Peak is at the middle, edges are lower
+                val base = 1f - kotlin.math.abs(i - barCount / 2f) / (barCount / 2f)
+                val noise = (0..40).random() / 100f // 0.0 to 0.4
+                randoms[i].value = (base * 0.4f + noise).coerceIn(0.1f, 1f)
+            }
+            delay(100) // Fast 10fps update for retro feel
+        }
+    }
+
+    Row(
+        modifier = modifier
+            .height(24.dp)
+            .padding(4.dp),
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        for (i in 0 until barCount) {
+            val barHeight by animateFloatAsState(
+                targetValue = randoms[i].value,
+                animationSpec = tween(durationMillis = 80),
+                label = "barHeight"
+            )
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight(barHeight)
+                    .background(Color(0xFF00FF00).copy(alpha = 0.8f))
+            )
+        }
+    }
+}
+
+/**
  * Renders the OSD overlays (Monospace font channel indexes, block volumes, and auto-tuning).
  */
 @Composable
@@ -504,17 +764,17 @@ fun IptvOsdOverlay(
     val volumeLevel by viewModel.currentVolume.collectAsState()
     val isVolumeVisible by viewModel.volumeDisplayVisible.collectAsState()
     val numpadBuffer by viewModel.inputBufferText.collectAsState()
+    val signalStrength by viewModel.signalStrength.collectAsState()
+    val sleepTimer by viewModel.sleepTimerMinutes.collectAsState()
+    val viewModelTime by viewModel.currentTime.collectAsState()
 
     val monospaceFont = FontFamily.Monospace
 
     var osdVisible by remember { mutableStateOf(false) }
-    var currentTime by remember { mutableStateOf("") }
 
     LaunchedEffect(activeChannel) {
         if (activeChannel != null) {
             osdVisible = true
-            val format = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
-            currentTime = format.format(java.util.Date())
             delay(4000) // Show for 4 seconds
             osdVisible = false
         }
@@ -525,6 +785,88 @@ fun IptvOsdOverlay(
             .fillMaxSize()
             .padding(28.dp)
     ) {
+        // Top-Right: Real-time Clock (7-segment style)
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .offset(y = if (activeChannel != null && !isTuning) 50.dp else 0.dp) // Avoid overlapping signal bars
+                .background(Color.Black.copy(alpha = 0.7f))
+                .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.3f))
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = viewModelTime,
+                color = Color(0xFF00FF00),
+                fontFamily = monospaceFont,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                style = androidx.compose.ui.text.TextStyle(
+                    shadow = androidx.compose.ui.graphics.Shadow(
+                        color = Color(0xFF00FF00),
+                        offset = androidx.compose.ui.geometry.Offset(0f, 0f),
+                        blurRadius = 8f
+                    )
+                )
+            )
+        }
+
+        // Top-Left: Sleep Timer
+        if (sleepTimer != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(8.dp)
+            ) {
+                Text(
+                    text = "SLEEP: $sleepTimer MIN",
+                    color = Color(0xFFFFB000), // Amber
+                    fontFamily = monospaceFont,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // Top-Right: Signal Strength Indicator
+        if (activeChannel != null && !isTuning) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    text = "SIGNAL",
+                    color = Color(0xFF00FF00),
+                    fontFamily = monospaceFont,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(verticalAlignment = Alignment.Bottom) {
+                    val bars = 5
+                    for (i in 1..bars) {
+                        val barHeight = 4 + (i * 4)
+                        val isActive = signalStrength >= (i.toFloat() / bars)
+                        Box(
+                            modifier = Modifier
+                                .width(6.dp)
+                                .height(barHeight.dp)
+                                .padding(horizontal = 1.dp)
+                                .background(if (isActive) Color(0xFF00FF00) else Color.DarkGray)
+                        )
+                    }
+                }
+                Text(
+                    text = "${(signalStrength * 100).toInt()}%",
+                    color = Color(0xFF00FF00),
+                    fontFamily = monospaceFont,
+                    fontSize = 10.sp
+                )
+            }
+        }
+
         // Bottom-Right: Monospace Green Channel Info & Time (AV-1, CH xx)
         if (activeChannel != null && !isTuning && osdVisible) {
             Column(
@@ -544,7 +886,7 @@ fun IptvOsdOverlay(
                         modifier = Modifier.padding(end = 8.dp)
                     )
                     Text(
-                        text = currentTime,
+                        text = viewModelTime.take(5), // Show HH:mm only
                         color = Color(0xFF00FF00),
                         fontFamily = monospaceFont,
                         fontSize = 18.sp,
@@ -566,6 +908,44 @@ fun IptvOsdOverlay(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (!activeChannel!!.groupTitle.isNullOrEmpty()) {
+                    Text(
+                        text = activeChannel!!.groupTitle!!.uppercase(),
+                        color = Color(0xFF00AA00), // Slightly darker green for description
+                        fontFamily = monospaceFont,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(6.dp))
+                
+                // EPG "Now Playing" block
+                Column(
+                    modifier = Modifier
+                        .background(Color(0xFF0A1F0A).copy(alpha = 0.8f))
+                        .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.5f))
+                        .padding(6.dp),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    Text(
+                        text = "NOW PLAYING",
+                        color = Color(0xFFFFB000), // Amber for EPG header
+                        fontFamily = monospaceFont,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "NO EPG DATA AVAILABLE", // Placeholder for XMLTV fetcher
+                        color = Color(0xFF00FF00),
+                        fontFamily = monospaceFont,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
@@ -871,6 +1251,42 @@ fun RetroSettingsMenu(
                     }
                 )
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Quick ADD Sources
+            Text(
+                text = "QUICK ADD SOURCES (AUTO-UPDATE):",
+                color = amber,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        playlistName = "BD CHANNELS"
+                        playlistUrl = "https://iptv-org.github.io/iptv/countries/bd.m3u"
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
+                    border = BorderStroke(1.dp, phosphorGreen)
+                ) {
+                    Text("BD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+                OutlinedButton(
+                    onClick = {
+                        playlistName = "WORLD CHANNELS"
+                        playlistUrl = "https://iptv-org.github.io/iptv/index.m3u"
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = phosphorGreen),
+                    border = BorderStroke(1.dp, phosphorGreen)
+                ) {
+                    Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -1178,31 +1594,88 @@ fun RetroChannelDrawer(
     val focusRequester = remember { FocusRequester() }
 
     var searchQuery by remember { mutableStateOf("") }
-    val filteredChannels = remember(channels, searchQuery) {
-        if (searchQuery.isBlank()) channels
-        else channels.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    var showOnlyFavorites by remember { mutableStateOf(false) }
+    val keyboardInput by viewModel.keyboardInput.collectAsState()
+    val selectedCategory by viewModel.selectedCategory.collectAsState()
+
+    val filteredChannels = remember(channels, searchQuery, showOnlyFavorites, keyboardInput, selectedCategory) {
+        channels.filter { channel ->
+            val effectiveSearch = if (keyboardInput.isNotEmpty()) keyboardInput else searchQuery
+            val matchesSearch = if (effectiveSearch.isBlank()) true else channel.name.contains(effectiveSearch, ignoreCase = true)
+            val matchesFav = if (showOnlyFavorites) channel.isFavorite else true
+            val matchesCategory = if (selectedCategory == null) true else channel.groupTitle == selectedCategory
+            matchesSearch && matchesFav && matchesCategory
+        }
+    }
+
+    val categories = remember(channels) {
+        listOf(null) + channels.mapNotNull { it.groupTitle }.distinct().sorted()
     }
 
     val bgColor = Color(0xFF0C120C)
     val phosphorGreen = Color(0xFF00FF00)
+    val amber = Color(0xFFFFB000)
 
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(360.dp)
+            .width(420.dp) // Slightly wider to accommodate logo
             .background(bgColor)
             .border(2.dp, phosphorGreen)
             .padding(24.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            Text(
-                text = "STB CHANNEL LIST",
-                color = phosphorGreen,
-                fontSize = 20.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "STB CHANNEL LIST",
+                    color = phosphorGreen,
+                    fontSize = 20.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                IconButton(onClick = { showOnlyFavorites = !showOnlyFavorites }) {
+                    Icon(
+                        imageVector = if (showOnlyFavorites) Icons.Default.Star else Icons.Outlined.Star,
+                        contentDescription = "Toggle Favorites Filter",
+                        tint = if (showOnlyFavorites) amber else Color.Gray
+                    )
+                }
+            }
+
+            // Category Filter Row
+            androidx.compose.foundation.lazy.LazyRow(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(categories) { category ->
+                    var isCatFocused by remember { mutableStateOf(false) }
+                    val isSelected = selectedCategory == category
+                    
+                    Box(
+                        modifier = Modifier
+                            .background(if (isSelected) phosphorGreen else if (isCatFocused) Color(0xFF122212) else Color.Transparent)
+                            .border(1.dp, phosphorGreen)
+                            .onFocusChanged { isCatFocused = it.isFocused }
+                            .clickable { viewModel.setCategory(category) }
+                            .focusable()
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = category?.uppercase() ?: "ALL",
+                            color = if (isSelected) Color.Black else if (isCatFocused) Color.White else phosphorGreen,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
 
             OutlinedTextField(
                 value = searchQuery,
@@ -1227,7 +1700,7 @@ fun RetroChannelDrawer(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                items(filteredChannels) { channel ->
+                items(filteredChannels, key = { it.id }) { channel ->
                     var isFocused by remember { mutableStateOf(false) }
                     val isPlaying = activeChannel?.id == channel.id
 
@@ -1244,11 +1717,19 @@ fun RetroChannelDrawer(
                             )
                             .onFocusChanged { isFocused = it.isFocused }
                             .onKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown && 
-                                    (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter)) {
-                                    viewModel.setActiveChannel(channel)
-                                    onClose()
-                                    true
+                                if (event.type == KeyEventType.KeyDown) {
+                                    when (event.key) {
+                                        Key.Enter, Key.NumPadEnter, Key.DirectionCenter -> {
+                                            viewModel.setActiveChannel(channel)
+                                            onClose()
+                                            true
+                                        }
+                                        Key.F, Key.I -> {
+                                            viewModel.toggleFavorite(channel)
+                                            true
+                                        }
+                                        else -> false
+                                    }
                                 } else {
                                     false
                                 }
@@ -1269,6 +1750,36 @@ fun RetroChannelDrawer(
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.width(36.dp)
                         )
+                        
+                        // Dynamic Channel Logo
+                        if (!channel.logoUrl.isNullOrEmpty()) {
+                            coil.compose.AsyncImage(
+                                model = channel.logoUrl,
+                                contentDescription = "${channel.name} logo",
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .padding(end = 8.dp)
+                                    .background(Color.Black),
+                                error = coil.compose.rememberAsyncImagePainter(android.R.drawable.ic_dialog_info), // Fallback
+                                contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .padding(end = 8.dp)
+                                    .background(Color.DarkGray)
+                                    .border(1.dp, Color.Gray),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "TV",
+                                    color = Color.LightGray,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
 
                         Text(
                             text = channel.name.uppercase(),
@@ -1279,6 +1790,28 @@ fun RetroChannelDrawer(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
+
+                        if (channel.isFavorite) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "Favorite",
+                                tint = amber,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .padding(end = 4.dp)
+                                    .clickable { viewModel.toggleFavorite(channel) }
+                            )
+                        } else if (isFocused) {
+                            Icon(
+                                imageVector = Icons.Outlined.Star,
+                                contentDescription = "Add to Favorites",
+                                tint = Color.Gray,
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .padding(end = 4.dp)
+                                    .clickable { viewModel.toggleFavorite(channel) }
+                            )
+                        }
 
                         if (isPlaying) {
                             Icon(
@@ -1473,6 +2006,486 @@ fun EmptyTVState(modifier: Modifier = Modifier) {
                 fontSize = 14.sp,
                 textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+@Composable
+fun RetroGridView(
+    viewModel: IptvViewModel,
+    onClose: () -> Unit
+) {
+    val channels by viewModel.channels.collectAsState()
+    val activeChannel by viewModel.activeChannel.collectAsState()
+    val phosphorGreen = Color(0xFF00FF00)
+    val bgColor = Color(0xFF0C120C)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.9f))
+            .clickable { onClose() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize(0.9f)
+                .background(bgColor)
+                .border(2.dp, phosphorGreen)
+                .padding(24.dp)
+                .clickable(enabled = false) { }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "STB GRID SELECTION",
+                    color = phosphorGreen,
+                    fontSize = 22.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "3X3 NAV MODE",
+                    color = phosphorGreen.copy(alpha = 0.6f),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                items(channels.take(18)) { channel -> // Limit to 18 for demo/performance
+                    GridViewItem(
+                        channel = channel,
+                        isPlaying = activeChannel?.id == channel.id,
+                        onClick = {
+                            viewModel.setActiveChannel(channel)
+                            onClose()
+                        }
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            Text(
+                text = "USE DPAD TO NAVIGATE | PRESS MENU TO EXIT",
+                color = phosphorGreen,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            )
+        }
+    }
+}
+
+@Composable
+fun GridViewItem(
+    channel: IPTVChannel,
+    isPlaying: Boolean,
+    onClick: () -> Unit
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    val phosphorGreen = Color(0xFF00FF00)
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(16f / 10f)
+            .background(if (isFocused) phosphorGreen.copy(alpha = 0.2f) else Color.Black)
+            .border(
+                width = if (isFocused) 2.dp else 1.dp,
+                color = if (isFocused) phosphorGreen else Color.DarkGray
+            )
+            .onFocusChanged { isFocused = it.isFocused }
+            .clickable { onClick() }
+            .focusable()
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Thumbnail / Logo
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color(0xFF111111)),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!channel.logoUrl.isNullOrEmpty()) {
+                    AsyncImage(
+                        model = channel.logoUrl,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(0.7f),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = Color.DarkGray,
+                        modifier = Modifier.size(32.dp)
+                    )
+                }
+                
+                if (isPlaying) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(4.dp)
+                            .background(Color.Red, RoundedCornerShape(2.dp))
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Text("LIVE", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Channel Name / EPG Placeholder
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (isFocused) phosphorGreen else Color.Black)
+                    .padding(4.dp)
+            ) {
+                Text(
+                    text = channel.name.uppercase(),
+                    color = if (isFocused) Color.Black else phosphorGreen,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "NO EPG DATA",
+                    color = if (isFocused) Color.Black.copy(alpha = 0.7f) else Color.Gray,
+                    fontSize = 8.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun TuningStaticOverlay(isActive: Boolean) {
+    if (!isActive) return
+
+    val infiniteTransition = rememberInfiniteTransition(label = "static")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.6f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(50, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    )
+
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val width = size.width
+        val height = size.height
+        val dotSize = 4f
+        
+        // Draw random white/gray dots
+        for (i in 0 until 500) {
+            val x = (0..width.toInt()).random().toFloat()
+            val y = (0..height.toInt()).random().toFloat()
+            val gray = (100..255).random()
+            drawRect(
+                color = Color(gray, gray, gray).copy(alpha = alpha),
+                topLeft = androidx.compose.ui.geometry.Offset(x, y),
+                size = androidx.compose.ui.geometry.Size(dotSize, dotSize)
+            )
+        }
+    }
+}
+
+@Composable
+fun RetroKeyboard(
+    viewModel: IptvViewModel,
+    onClose: () -> Unit
+) {
+    val keyboardInput by viewModel.keyboardInput.collectAsState()
+    val phosphorGreen = Color(0xFF00FF00)
+    val bgColor = Color(0xFF0C120C)
+    
+    val keys = listOf(
+        listOf("A", "B", "C", "D", "E", "F"),
+        listOf("G", "H", "I", "J", "K", "L"),
+        listOf("M", "N", "O", "P", "Q", "R"),
+        listOf("S", "T", "U", "V", "W", "X"),
+        listOf("Y", "Z", "0", "1", "2", "3"),
+        listOf("4", "5", "6", "7", "8", "9"),
+        listOf("SPACE", "BACK", "CLEAR", "DONE")
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.7f))
+            .clickable { onClose() },
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .width(450.dp)
+                .background(bgColor)
+                .border(2.dp, phosphorGreen)
+                .padding(24.dp)
+                .clickable(enabled = false) { }
+        ) {
+            Text(
+                text = "RETRO SEARCH KEYBOARD",
+                color = phosphorGreen,
+                fontSize = 18.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            // Input display
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .background(Color.Black)
+                    .border(1.dp, phosphorGreen)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    text = "$keyboardInput|",
+                    color = phosphorGreen,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 20.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Keys Grid
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                keys.forEach { row ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        row.forEach { key ->
+                            var isFocused by remember { mutableStateOf(false) }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(40.dp)
+                                    .background(if (isFocused) phosphorGreen else Color.Transparent)
+                                    .border(1.dp, phosphorGreen)
+                                    .onFocusChanged { isFocused = it.isFocused }
+                                    .onKeyEvent { event ->
+                                        if (event.type == KeyEventType.KeyDown && 
+                                            (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter)) {
+                                            when (key) {
+                                                "SPACE" -> viewModel.updateKeyboardInput(keyboardInput + " ")
+                                                "BACK" -> if (keyboardInput.isNotEmpty()) viewModel.updateKeyboardInput(keyboardInput.dropLast(1))
+                                                "CLEAR" -> viewModel.updateKeyboardInput("")
+                                                "DONE" -> onClose()
+                                                else -> viewModel.updateKeyboardInput(keyboardInput + key)
+                                            }
+                                            true
+                                        } else false
+                                    }
+                                    .clickable {
+                                        when (key) {
+                                            "SPACE" -> viewModel.updateKeyboardInput(keyboardInput + " ")
+                                            "BACK" -> if (keyboardInput.isNotEmpty()) viewModel.updateKeyboardInput(keyboardInput.dropLast(1))
+                                            "CLEAR" -> viewModel.updateKeyboardInput("")
+                                            "DONE" -> onClose()
+                                            else -> viewModel.updateKeyboardInput(keyboardInput + key)
+                                        }
+                                    }
+                                    .focusable(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = key,
+                                    color = if (isFocused) Color.Black else phosphorGreen,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TechnicalStatsOverlay(viewModel: IptvViewModel) {
+    val visible by viewModel.technicalStatsVisible.collectAsState()
+    if (!visible) return
+
+    val resolution by viewModel.streamResolution.collectAsState()
+    val codec by viewModel.streamCodec.collectAsState()
+    val bitrate by viewModel.streamBitrate.collectAsState()
+    val phosphorGreen = Color(0xFF00FF00)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.85f))
+                .border(2.dp, phosphorGreen)
+                .padding(24.dp)
+        ) {
+            Text(
+                text = "STREAM TECHNICAL DATA",
+                color = phosphorGreen,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
+            
+            val stats = listOf(
+                "RESOLUTION" to resolution,
+                "CODEC" to codec,
+                "BITRATE" to bitrate,
+                "TUNER" to "ANALOG-STB-9000",
+                "SYNC" to "VERTICAL-LOCK"
+            )
+
+            stats.forEach { (label, value) ->
+                Row(modifier = Modifier.fillMaxWidth(0.4f), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = "$label:", color = Color.Gray, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text(text = value, color = phosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PinEntryDialog(viewModel: IptvViewModel) {
+    val visible by viewModel.isPinEntryVisible.collectAsState()
+    if (!visible) return
+
+    val pinBuffer by viewModel.pinBuffer.collectAsState()
+    val phosphorGreen = Color(0xFF00FF00)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.95f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "PARENTAL LOCK",
+                color = Color.Red,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = "ENTER 4-DIGIT PIN",
+                color = phosphorGreen,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 14.sp
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                for (i in 0 until 4) {
+                    val digit = if (i < pinBuffer.length) "*" else "_"
+                    Text(
+                        text = digit,
+                        color = phosphorGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            
+            // Hidden D-pad helper
+            Box(modifier = Modifier.size(1.dp).onKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown) {
+                    val digit = when (event.key) {
+                        Key.Zero, Key.NumPad0 -> 0
+                        Key.One, Key.NumPad1 -> 1
+                        Key.Two, Key.NumPad2 -> 2
+                        Key.Three, Key.NumPad3 -> 3
+                        Key.Four, Key.NumPad4 -> 4
+                        Key.Five, Key.NumPad5 -> 5
+                        Key.Six, Key.NumPad6 -> 6
+                        Key.Seven, Key.NumPad7 -> 7
+                        Key.Eight, Key.NumPad8 -> 8
+                        Key.Nine, Key.NumPad9 -> 9
+                        else -> -1
+                    }
+                    if (digit != -1) {
+                        viewModel.pressPinDigit(digit)
+                        true
+                    } else false
+                } else false
+            }.focusable()) {
+                val focusRequester = remember { FocusRequester() }
+                LaunchedEffect(Unit) { focusRequester.requestFocus() }
+                Box(modifier = Modifier.focusRequester(focusRequester).focusable())
+            }
+        }
+    }
+}
+
+@Composable
+fun CrtPowerOnEffect(viewModel: IptvViewModel) {
+    val isActive by viewModel.isPowerOnEffectActive.collectAsState()
+    if (!isActive) return
+
+    var animStarted by remember { mutableStateOf(false) }
+    
+    val scale by animateFloatAsState(
+        targetValue = if (animStarted) 100f else 0f,
+        animationSpec = tween(durationMillis = 800, easing = LinearOutSlowInEasing),
+        label = "powerOnScale"
+    )
+
+    LaunchedEffect(Unit) {
+        delay(300)
+        animStarted = true
+        delay(1000)
+        viewModel.dismissPowerOnEffect()
+    }
+
+    if (scale < 100f) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val center = center
+            val radius = (size.minDimension / 2) * (scale / 100f)
+            
+            // Draw background black
+            drawRect(color = Color.Black)
+            
+            // Draw expanding white circle/dot
+            if (scale > 0) {
+                drawCircle(
+                    color = Color.White,
+                    radius = radius.coerceAtLeast(4f),
+                    center = center
+                )
+            }
         }
     }
 }

@@ -15,12 +15,20 @@ class IptvRepository(private val iptvDao: IptvDao) {
     val playlists: Flow<List<M3UPlaylist>> = iptvDao.getAllPlaylists()
     val channels: Flow<List<IPTVChannel>> = iptvDao.getAllChannels()
 
+    suspend fun getAllChannelsNow(): List<IPTVChannel> = withContext(Dispatchers.IO) {
+        iptvDao.getAllChannelsNow()
+    }
+
     suspend fun getChannelCount(): Int = withContext(Dispatchers.IO) {
         iptvDao.getChannelCount()
     }
 
     suspend fun getChannelByNumber(num: Int): IPTVChannel? = withContext(Dispatchers.IO) {
         iptvDao.getChannelByNumber(num)
+    }
+
+    suspend fun toggleFavorite(channel: IPTVChannel) = withContext(Dispatchers.IO) {
+        iptvDao.updateChannel(channel.copy(isFavorite = !channel.isFavorite))
     }
 
     /**
@@ -115,7 +123,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
                 )
                 connection.connectTimeout = 15000
                 connection.readTimeout = 15000
-                connection.instanceFollowRedirects = true
+                connection.instanceFollowRedirects = false
                 connection.doInput = true
 
                 responseCode = connection.responseCode
@@ -209,7 +217,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
             
             // We read line-by-line
             var isFirstLine = true
-            var isM3u = false
+            var isM3u = true // Assume true, don't fail immediately
 
             while (reader.readLine().also { line = it } != null) {
                 val currentLine = line ?: continue
@@ -217,17 +225,6 @@ class IptvRepository(private val iptvDao: IptvDao) {
                 bytesRead += currentLine.length + 1 // Approximate bytes read
 
                 if (trimmed.isEmpty()) continue
-
-                if (isFirstLine) {
-                    isFirstLine = false
-                    if (trimmed.contains("#EXTM3U")) {
-                        isM3u = true
-                    } else {
-                        // Delete empty playlist to clean up
-                        iptvDao.deletePlaylist(playlistId)
-                        return@withContext Result.failure(Exception("Invalid M3U playlist (missing #EXTM3U)"))
-                    }
-                }
 
                 if (trimmed.startsWith("#EXTINF:")) {
                     // Extract metadata
@@ -269,7 +266,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
                             val percent = if (contentLength > 0) {
                                 (bytesRead * 100 / contentLength).toInt().coerceIn(10, 90)
                             } else {
-                                (10 + (channels.size / 50) % 80) // dummy smooth retro counter
+                                (10 + (channels.size % 80)) // simple progress that wraps
                             }
                             onProgress("PARSING: ${channels.size} CHANNELS FOUND...", percent, channels.size)
                         }
