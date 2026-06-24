@@ -47,6 +47,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -398,7 +403,15 @@ fun AndroidVideoPlayer(
                 )
                 .build()
 
+            val dataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                .setAllowCrossProtocolRedirects(true)
+            
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+                .setDataSourceFactory(dataSourceFactory)
+
             val player = ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .build().apply {
                     playWhenReady = true
@@ -707,6 +720,15 @@ fun RetroSettingsMenu(
 
     val focusRequester = remember { FocusRequester() }
 
+    val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val name = if (playlistName.isNotEmpty()) playlistName else "LOCAL M3U"
+            viewModel.importPlaylistFromFile(name, uri, context)
+        }
+    }
+
     // Custom monospace/pixel theme colors
     val bgColor = Color(0xFF0C120C)
     val phosphorGreen = Color(0xFF00FF00)
@@ -889,31 +911,56 @@ fun RetroSettingsMenu(
                 }
             } else {
                 var isLoadButtonFocused by remember { mutableStateOf(false) }
-                Button(
-                    onClick = {
-                        if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty()) {
-                            viewModel.importPlaylist(playlistName, playlistUrl)
-                            keyboardController?.hide()
-                            focusManager.clearFocus()
-                        } else {
-                            Toast.makeText(context, "PLEASE FILL IN BOTH FIELDS", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isLoadButtonFocused) phosphorGreen else Color.Transparent
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onFocusChanged { isLoadButtonFocused = it.isFocused }
-                        .border(1.dp, phosphorGreen),
-                    shape = RoundedCornerShape(4.dp)
-                ) {
-                    Text(
-                        text = "IMPORT PLAYLIST SOURCE",
-                        color = if (isLoadButtonFocused) Color.Black else phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.Bold
-                    )
+                var isFileButtonFocused by remember { mutableStateOf(false) }
+                
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty()) {
+                                viewModel.importPlaylist(playlistName, playlistUrl)
+                                keyboardController?.hide()
+                                focusManager.clearFocus()
+                            } else {
+                                Toast.makeText(context, "PLEASE FILL IN BOTH FIELDS", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isLoadButtonFocused) phosphorGreen else Color.Transparent
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .onFocusChanged { isLoadButtonFocused = it.isFocused }
+                            .border(1.dp, phosphorGreen),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "IMPORT URL",
+                            color = if (isLoadButtonFocused) Color.Black else phosphorGreen,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Button(
+                        onClick = { filePickerLauncher.launch("*/*") },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isFileButtonFocused) amber else Color.Transparent
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .onFocusChanged { isFileButtonFocused = it.isFocused }
+                            .border(1.dp, amber),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "LOCAL M3U",
+                            color = if (isFileButtonFocused) Color.Black else amber,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
                 }
             }
 
@@ -1101,6 +1148,12 @@ fun RetroChannelDrawer(
     val activeChannel by viewModel.activeChannel.collectAsState()
     val focusRequester = remember { FocusRequester() }
 
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredChannels = remember(channels, searchQuery) {
+        if (searchQuery.isBlank()) channels
+        else channels.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    }
+
     val bgColor = Color(0xFF0C120C)
     val phosphorGreen = Color(0xFF00FF00)
 
@@ -1119,7 +1172,25 @@ fun RetroChannelDrawer(
                 fontSize = 20.sp,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 16.dp)
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                label = { Text("FILTER", color = phosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 10.sp) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = phosphorGreen,
+                    unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.LightGray,
+                    cursorColor = phosphorGreen
+                ),
+                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
             )
 
             LazyColumn(
@@ -1127,7 +1198,7 @@ fun RetroChannelDrawer(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                items(channels) { channel ->
+                items(filteredChannels) { channel ->
                     var isFocused by remember { mutableStateOf(false) }
                     val isPlaying = activeChannel?.id == channel.id
 
@@ -1143,6 +1214,16 @@ fun RetroChannelDrawer(
                                 if (isFocused) Color(0xFF122212) else if (isPlaying) Color(0xFF061106) else Color.Transparent
                             )
                             .onFocusChanged { isFocused = it.isFocused }
+                            .onKeyEvent { event ->
+                                if (event.type == KeyEventType.KeyDown && 
+                                    (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter)) {
+                                    viewModel.setActiveChannel(channel)
+                                    onClose()
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             .clickable {
                                 viewModel.setActiveChannel(channel)
                                 onClose()

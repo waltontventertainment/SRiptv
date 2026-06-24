@@ -144,9 +144,51 @@ class IptvRepository(private val iptvDao: IptvDao) {
 
             val contentLength = connection.contentLength
             val inputStream = connection.inputStream
-            val reader = BufferedReader(InputStreamReader(inputStream))
+            
+            importPlaylistFromInputStream(name, urlString, inputStream, contentLength, onProgress)
+        } catch (e: Exception) {
+            Log.e("IptvRepository", "Failed to import playlist", e)
+            Result.failure(e)
+        }
+    }
 
-            onProgress("CONNECTED. READING PLAYLIST...", 5, 0)
+    suspend fun importPlaylistFromLocalFile(
+        name: String,
+        uri: android.net.Uri,
+        context: android.content.Context,
+        onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            onProgress("OPENING LOCAL FILE...", 0, 0)
+            val inputStream = context.contentResolver.openInputStream(uri)
+                ?: return@withContext Result.failure(Exception("Cannot open file: $uri"))
+            
+            // Get approximate length from file
+            var contentLength = -1
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (sizeIndex != -1 && cursor.moveToFirst()) {
+                    contentLength = cursor.getLong(sizeIndex).toInt()
+                }
+            }
+
+            importPlaylistFromInputStream(name, uri.toString(), inputStream, contentLength, onProgress)
+        } catch (e: Exception) {
+            Log.e("IptvRepository", "Failed to import local playlist", e)
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun importPlaylistFromInputStream(
+        name: String,
+        urlString: String,
+        inputStream: java.io.InputStream,
+        contentLength: Int,
+        onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val reader = BufferedReader(InputStreamReader(inputStream))
+            onProgress("READING PLAYLIST...", 5, 0)
 
             // Create the playlist entity
             val playlist = M3UPlaylist(name = name, url = urlString)
@@ -206,7 +248,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
                 } else {
                     // Stream URL line
                     val streamUrl = trimmed
-                    if (streamUrl.startsWith("http://") || streamUrl.startsWith("https://")) {
+                    if (streamUrl.isNotEmpty()) {
                         channels.add(
                             IPTVChannel(
                                 playlistId = playlistId,

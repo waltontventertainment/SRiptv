@@ -344,6 +344,28 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun importPlaylistFromFile(name: String, uri: android.net.Uri, context: android.content.Context) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            _importProgressPercent.value = 0
+            _importChannelCount.value = 0
+            _importStatus.value = "OPENING LOCAL FILE..."
+            
+            val result = repository.importPlaylistFromLocalFile(name, uri, context) { status, percent, count ->
+                _importStatus.value = status
+                _importProgressPercent.value = percent
+                _importChannelCount.value = count
+            }
+            
+            _isImporting.value = false
+            _importedPlaylistResult.emit(result)
+            if (result.isSuccess) {
+                // Run analog tuning to scan these channels sequentially
+                runAnalogAutoTuning(isFirstLaunch = false)
+            }
+        }
+    }
+
     /**
      * Imports a playlist URL and triggers tuning.
      */

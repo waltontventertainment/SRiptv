@@ -151,13 +151,22 @@ fun CrtScanlineOverlay(modifier: Modifier = Modifier) {
         // 3. Curved tube bezel and screen frame vignette shadow
         drawRect(
             brush = Brush.radialGradient(
-                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.42f)),
+                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)),
                 center = Offset(width / 2f, height / 2f),
                 radius = (width / 2f) * 1.35f
             )
         )
 
-        // Subtle ambient screen glare
+        // 4. Tube inner glow (Phosphor bounce)
+        drawRect(
+            brush = Brush.radialGradient(
+                colors = listOf(Color.Transparent, Color(0x1A00FF00), Color.Transparent),
+                center = Offset(width / 2f, height / 2f),
+                radius = width * 0.8f
+            )
+        )
+
+        // 5. Subtle ambient screen glare
         drawRect(
             brush = Brush.linearGradient(
                 colors = listOf(Color.White.copy(alpha = 0.03f), Color.Transparent),
