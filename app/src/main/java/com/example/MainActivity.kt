@@ -65,6 +65,7 @@ import com.example.data.M3UPlaylist
 import com.example.ui.*
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -460,6 +461,11 @@ fun AndroidVideoPlayer(
         }
     }
 
+    val currentVolume by viewModel.currentVolume.collectAsState()
+    LaunchedEffect(currentVolume) {
+        playerInstance?.volume = currentVolume / 10f
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             playerInstance?.release()
@@ -501,27 +507,50 @@ fun IptvOsdOverlay(
 
     val monospaceFont = FontFamily.Monospace
 
+    var osdVisible by remember { mutableStateOf(false) }
+    var currentTime by remember { mutableStateOf("") }
+
+    LaunchedEffect(activeChannel) {
+        if (activeChannel != null) {
+            osdVisible = true
+            val format = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+            currentTime = format.format(java.util.Date())
+            delay(4000) // Show for 4 seconds
+            osdVisible = false
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .padding(28.dp)
     ) {
-        // Top-Right: Monospace Green Channel Info (AV-1, CH xx)
-        if (activeChannel != null && !isTuning) {
+        // Bottom-Right: Monospace Green Channel Info & Time (AV-1, CH xx)
+        if (activeChannel != null && !isTuning && osdVisible) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
+                    .align(Alignment.BottomEnd)
                     .background(Color.Black.copy(alpha = 0.5f))
                     .padding(8.dp),
                 horizontalAlignment = Alignment.End
             ) {
-                Text(
-                    text = "AV-1",
-                    color = Color(0xFF00FF00),
-                    fontFamily = monospaceFont,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "AV-1",
+                        color = Color(0xFF00FF00),
+                        fontFamily = monospaceFont,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                    Text(
+                        text = currentTime,
+                        color = Color(0xFF00FF00),
+                        fontFamily = monospaceFont,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
                 Text(
                     text = "CH ${String.format("%02d", activeChannel!!.channelNumber)}",
                     color = Color(0xFF00FF00),
