@@ -88,31 +88,175 @@ class IptvRepository(private val iptvDao: IptvDao) {
 
     /**
      * Downloads and parses an M3U playlist from a URL, assigning sequential channel numbers.
+     * Reports live progress via onProgress callback.
      */
-    suspend fun importPlaylistFromUrl(name: String, urlString: String): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun importPlaylistFromUrl(
+        name: String,
+        urlString: String,
+        onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
+            onProgress("CONNECTING TO SERVER...", 0, 0)
             Log.d("IptvRepository", "Importing playlist: $name from $urlString")
-            val content = fetchUrlContent(urlString)
-            if (content.isEmpty() || !content.contains("#EXTM3U")) {
-                return@withContext Result.failure(Exception("Invalid M3U playlist content (missing #EXTM3U)"))
+            
+            var currentUrl = urlString
+            var connection: HttpURLConnection? = null
+            var redirectCount = 0
+            val maxRedirects = 5
+            var responseCode = -1
+
+            while (redirectCount < maxRedirects) {
+                val url = URL(currentUrl)
+                connection = url.openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.setRequestProperty(
+                    "User-Agent", 
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                connection.connectTimeout = 15000
+                connection.readTimeout = 15000
+                connection.instanceFollowRedirects = true
+                connection.doInput = true
+
+                responseCode = connection.responseCode
+                if (responseCode == HttpURLConnection.HTTP_MOVED_PERM ||
+                    responseCode == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    responseCode == HttpURLConnection.HTTP_SEE_OTHER ||
+                    responseCode == 307 ||
+                    responseCode == 308
+                ) {
+                    val newUrl = connection.getHeaderField("Location")
+                    if (newUrl.isNullOrEmpty()) {
+                        break
+                    }
+                    currentUrl = newUrl
+                    redirectCount++
+                    Log.d("IptvRepository", "Following redirect $redirectCount to $currentUrl")
+                    connection.disconnect()
+                } else {
+                    break
+                }
             }
+
+            if (connection == null || responseCode != HttpURLConnection.HTTP_OK) {
+                return@withContext Result.failure(Exception("HTTP Error: $responseCode"))
+            }
+
+            val contentLength = connection.contentLength
+            val inputStream = connection.inputStream
+            val reader = BufferedReader(InputStreamReader(inputStream))
+
+            onProgress("CONNECTED. READING PLAYLIST...", 5, 0)
 
             // Create the playlist entity
             val playlist = M3UPlaylist(name = name, url = urlString)
             val playlistId = iptvDao.insertPlaylist(playlist).toInt()
 
-            // Find the starting channel number to prevent overlap
+            // Find starting channel number to prevent overlap
             val maxChannelNum = iptvDao.getMaxChannelNumber() ?: 0
             val startChannelNum = if (maxChannelNum == 0) 1 else maxChannelNum + 1
 
-            // Parse and insert channels
-            val channels = parseM3u(playlistId, content, startChannelNum)
+            val channels = mutableListOf<IPTVChannel>()
+            var currentName: String? = null
+            var currentLogoUrl: String? = null
+            var currentGroup: String? = null
+            var channelIndex = startChannelNum
+
+            var line: String?
+            var bytesRead = 0L
+            
+            // We read line-by-line
+            var isFirstLine = true
+            var isM3u = false
+
+            while (reader.readLine().also { line = it } != null) {
+                val currentLine = line ?: continue
+                val trimmed = currentLine.trim()
+                bytesRead += currentLine.length + 1 // Approximate bytes read
+
+                if (trimmed.isEmpty()) continue
+
+                if (isFirstLine) {
+                    isFirstLine = false
+                    if (trimmed.contains("#EXTM3U")) {
+                        isM3u = true
+                    } else {
+                        // Delete empty playlist to clean up
+                        iptvDao.deletePlaylist(playlistId)
+                        return@withContext Result.failure(Exception("Invalid M3U playlist (missing #EXTM3U)"))
+                    }
+                }
+
+                if (trimmed.startsWith("#EXTINF:")) {
+                    // Extract metadata
+                    currentName = parseTagValue(trimmed, "tvg-name")
+                    currentLogoUrl = parseTagValue(trimmed, "tvg-logo")
+                    currentGroup = parseTagValue(trimmed, "group-title")
+
+                    // Fallback to name after last comma if tvg-name is missing or empty
+                    val commaIndex = trimmed.lastIndexOf(',')
+                    if (commaIndex != -1 && commaIndex < trimmed.length - 1) {
+                        val candidateName = trimmed.substring(commaIndex + 1).trim()
+                        if (candidateName.isNotEmpty()) {
+                            currentName = candidateName
+                        }
+                    }
+                } else if (trimmed.startsWith("#")) {
+                    continue
+                } else {
+                    // Stream URL line
+                    val streamUrl = trimmed
+                    if (streamUrl.startsWith("http://") || streamUrl.startsWith("https://")) {
+                        channels.add(
+                            IPTVChannel(
+                                playlistId = playlistId,
+                                name = currentName ?: "Channel $channelIndex",
+                                url = streamUrl,
+                                logoUrl = currentLogoUrl,
+                                groupTitle = currentGroup ?: "General",
+                                channelNumber = channelIndex++
+                            )
+                        )
+                        // Reset transient fields
+                        currentName = null
+                        currentLogoUrl = null
+                        currentGroup = null
+
+                        // Periodically report progress to not overflow the UI state updates
+                        if (channels.size % 20 == 0) {
+                            val percent = if (contentLength > 0) {
+                                (bytesRead * 100 / contentLength).toInt().coerceIn(10, 90)
+                            } else {
+                                (10 + (channels.size / 50) % 80) // dummy smooth retro counter
+                            }
+                            onProgress("PARSING: ${channels.size} CHANNELS FOUND...", percent, channels.size)
+                        }
+                    }
+                }
+            }
+            reader.close()
+
+            if (!isM3u) {
+                iptvDao.deletePlaylist(playlistId)
+                return@withContext Result.failure(Exception("Invalid M3U: Missing #EXTM3U header"))
+            }
+
             if (channels.isNotEmpty()) {
-                iptvDao.insertChannels(channels)
+                onProgress("SAVING ${channels.size} CHANNELS TO DATABASE...", 92, channels.size)
+                
+                // Save in batches of 500 to prevent SQLite bulk insert failures
+                val chunkSize = 500
+                val totalChunks = (channels.size + chunkSize - 1) / chunkSize
+                channels.chunked(chunkSize).forEachIndexed { index, batch ->
+                    iptvDao.insertChannels(batch)
+                    val percent = 92 + ((index + 1) * 8 / totalChunks).coerceIn(0, 8)
+                    onProgress("SAVING CHANNELS (${percent}%)...", percent, channels.size)
+                }
+                
+                onProgress("IMPORT COMPLETED!", 100, channels.size)
                 Log.d("IptvRepository", "Imported ${channels.size} channels.")
                 Result.success(Unit)
             } else {
-                // Delete empty playlist to clean up
                 iptvDao.deletePlaylist(playlistId)
                 Result.failure(Exception("No valid channels found in the M3U file"))
             }
@@ -127,81 +271,6 @@ class IptvRepository(private val iptvDao: IptvDao) {
      */
     suspend fun deletePlaylist(playlistId: Int) = withContext(Dispatchers.IO) {
         iptvDao.deletePlaylist(playlistId)
-    }
-
-    private fun fetchUrlContent(urlString: String): String {
-        val url = URL(urlString)
-        val connection = url.openConnection() as HttpURLConnection
-        connection.requestMethod = "GET"
-        connection.connectTimeout = 8000
-        connection.readTimeout = 8000
-        connection.doInput = true
-
-        val responseCode = connection.responseCode
-        if (responseCode == HttpURLConnection.HTTP_OK) {
-            val reader = BufferedReader(InputStreamReader(connection.inputStream))
-            val sb = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                sb.append(line).append("\n")
-            }
-            reader.close()
-            return sb.toString()
-        } else {
-            throw Exception("HTTP Error: $responseCode")
-        }
-    }
-
-    private fun parseM3u(playlistId: Int, content: String, startChannelNum: Int): List<IPTVChannel> {
-        val channels = mutableListOf<IPTVChannel>()
-        val lines = content.lines()
-        var currentName: String? = null
-        var currentLogoUrl: String? = null
-        var currentGroup: String? = null
-        var channelIndex = startChannelNum
-
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.isEmpty()) continue
-            if (trimmed.startsWith("#EXTINF:")) {
-                // Extract metadata
-                currentName = parseTagValue(trimmed, "tvg-name")
-                currentLogoUrl = parseTagValue(trimmed, "tvg-logo")
-                currentGroup = parseTagValue(trimmed, "group-title")
-
-                // Fallback to name after last comma if tvg-name is missing or empty
-                val commaIndex = trimmed.lastIndexOf(',')
-                if (commaIndex != -1 && commaIndex < trimmed.length - 1) {
-                    val candidateName = trimmed.substring(commaIndex + 1).trim()
-                    if (candidateName.isNotEmpty()) {
-                        currentName = candidateName
-                    }
-                }
-            } else if (trimmed.startsWith("#")) {
-                // Skip other tags
-                continue
-            } else {
-                // This is a stream URL line
-                val streamUrl = trimmed
-                if (streamUrl.startsWith("http://") || streamUrl.startsWith("https://")) {
-                    channels.add(
-                        IPTVChannel(
-                            playlistId = playlistId,
-                            name = currentName ?: "Channel $channelIndex",
-                            url = streamUrl,
-                            logoUrl = currentLogoUrl,
-                            groupTitle = currentGroup ?: "General",
-                            channelNumber = channelIndex++
-                        )
-                    )
-                    // Reset transient fields
-                    currentName = null
-                    currentLogoUrl = null
-                    currentGroup = null
-                }
-            }
-        }
-        return channels
     }
 
     private fun parseTagValue(line: String, tagName: String): String? {

@@ -28,6 +28,9 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeChannel = MutableStateFlow<IPTVChannel?>(null)
     val activeChannel: StateFlow<IPTVChannel?> = _activeChannel.asStateFlow()
 
+    private val _selectedSourceUrl = MutableStateFlow<String?>(null)
+    val selectedSourceUrl: StateFlow<String?> = _selectedSourceUrl.asStateFlow()
+
     private val _isStaticActive = MutableStateFlow(false)
     val isStaticActive: StateFlow<Boolean> = _isStaticActive.asStateFlow()
 
@@ -68,6 +71,19 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _importedPlaylistResult = MutableSharedFlow<Result<Unit>>()
     val importedPlaylistResult: SharedFlow<Result<Unit>> = _importedPlaylistResult.asSharedFlow()
+
+    // Playlist Import Progress states
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    private val _importStatus = MutableStateFlow("")
+    val importStatus: StateFlow<String> = _importStatus.asStateFlow()
+
+    private val _importProgressPercent = MutableStateFlow(0)
+    val importProgressPercent: StateFlow<Int> = _importProgressPercent.asStateFlow()
+
+    private val _importChannelCount = MutableStateFlow(0)
+    val importChannelCount: StateFlow<Int> = _importChannelCount.asStateFlow()
 
     private var numpadDebounceJob: Job? = null
     private var staticOverlayJob: Job? = null
@@ -178,8 +194,17 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     fun setActiveChannel(channel: IPTVChannel) {
         viewModelScope.launch {
             _activeChannel.value = channel
+            
+            // Look up the playlist to get its source URL
+            val playlist = playlists.value.find { it.id == channel.playlistId }
+            val sourceUrl = playlist?.url
+            _selectedSourceUrl.value = sourceUrl
+
             // Save state
-            sharedPrefs.edit().putInt("last_watched_channel_num", channel.channelNumber).apply()
+            sharedPrefs.edit()
+                .putInt("last_watched_channel_num", channel.channelNumber)
+                .putString("last_selected_source_url", sourceUrl)
+                .apply()
 
             // Reset signal/stream health indicators for the new channel
             _isStreamBuffering.value = false
@@ -324,7 +349,18 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun importPlaylist(name: String, url: String) {
         viewModelScope.launch {
-            val result = repository.importPlaylistFromUrl(name, url)
+            _isImporting.value = true
+            _importProgressPercent.value = 0
+            _importChannelCount.value = 0
+            _importStatus.value = "CONNECTING..."
+            
+            val result = repository.importPlaylistFromUrl(name, url) { status, percent, count ->
+                _importStatus.value = status
+                _importProgressPercent.value = percent
+                _importChannelCount.value = count
+            }
+            
+            _isImporting.value = false
             _importedPlaylistResult.emit(result)
             if (result.isSuccess) {
                 // Run analog tuning to scan these channels sequentially
@@ -368,15 +404,43 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private fun restoreLastWatchedChannel() {
         viewModelScope.launch {
             if (repository.getChannelCount() > 0) {
-                // Wait for the flow to emit a non-empty list of channels
-                val list = channels.filter { it.isNotEmpty() }.first()
+                // Wait for the flows to emit non-empty lists
+                val playlistList = playlists.filter { it.isNotEmpty() }.first()
+                val channelList = channels.filter { it.isNotEmpty() }.first()
+                
                 val savedNum = sharedPrefs.getInt("last_watched_channel_num", -1)
-                val lastChannel = list.find { it.channelNumber == savedNum }
-                if (lastChannel != null) {
-                    _activeChannel.value = lastChannel
-                } else {
-                    _activeChannel.value = list.first()
+                val savedSourceUrl = sharedPrefs.getString("last_selected_source_url", null)
+                
+                _selectedSourceUrl.value = savedSourceUrl
+
+                var targetChannel: IPTVChannel? = null
+
+                if (!savedSourceUrl.isNullOrEmpty()) {
+                    val matchingPlaylist = playlistList.find { it.url == savedSourceUrl }
+                    if (matchingPlaylist != null) {
+                        val playlistChannels = channelList.filter { it.playlistId == matchingPlaylist.id }
+                        if (playlistChannels.isNotEmpty()) {
+                            // Find the saved channel number within this playlist first
+                            targetChannel = playlistChannels.find { it.channelNumber == savedNum }
+                            // If not found, default to the first channel of this playlist
+                            if (targetChannel == null) {
+                                targetChannel = playlistChannels.first()
+                            }
+                        }
+                    }
                 }
+
+                // Fallback to searching all channels by saved channel number
+                if (targetChannel == null && savedNum != -1) {
+                    targetChannel = channelList.find { it.channelNumber == savedNum }
+                }
+
+                // Ultimate fallback: first channel in the system
+                if (targetChannel == null) {
+                    targetChannel = channelList.first()
+                }
+
+                _activeChannel.value = targetChannel
             }
         }
     }

@@ -38,6 +38,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -690,8 +692,15 @@ fun RetroSettingsMenu(
     modifier: Modifier = Modifier
 ) {
     val playlists by viewModel.playlists.collectAsState()
+    val isImporting by viewModel.isImporting.collectAsState()
+    val importStatus by viewModel.importStatus.collectAsState()
+    val importProgressPercent by viewModel.importProgressPercent.collectAsState()
+    val importChannelCount by viewModel.importChannelCount.collectAsState()
+
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
 
     var playlistName by remember { mutableStateOf("") }
     var playlistUrl by remember { mutableStateOf("") }
@@ -703,6 +712,14 @@ fun RetroSettingsMenu(
     val phosphorGreen = Color(0xFF00FF00)
     val amber = Color(0xFFFFB000)
 
+    // Hide keyboard and clear focus when this screen is dismissed/disposed
+    DisposableEffect(Unit) {
+        onDispose {
+            keyboardController?.hide()
+            focusManager.clearFocus()
+        }
+    }
+
     // Handle import feedback
     LaunchedEffect(Unit) {
         viewModel.importedPlaylistResult.collectLatest { result ->
@@ -710,6 +727,8 @@ fun RetroSettingsMenu(
                 Toast.makeText(context, "M3U PLAYLIST IMPORTED SUCCESSFULLY!", Toast.LENGTH_LONG).show()
                 playlistName = ""
                 playlistUrl = ""
+                keyboardController?.hide()
+                focusManager.clearFocus()
             } else {
                 Toast.makeText(context, "ERROR: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
             }
@@ -749,13 +768,17 @@ fun RetroSettingsMenu(
             OutlinedTextField(
                 value = playlistName,
                 onValueChange = { playlistName = it },
+                enabled = !isImporting,
                 label = { Text("PLAYLIST LABEL", color = phosphorGreen, fontFamily = FontFamily.Monospace) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = phosphorGreen,
                     unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
                     focusedLabelColor = phosphorGreen,
                     focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
+                    unfocusedTextColor = Color.White,
+                    disabledBorderColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledLabelColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledTextColor = Color.Gray
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -769,13 +792,17 @@ fun RetroSettingsMenu(
             OutlinedTextField(
                 value = playlistUrl,
                 onValueChange = { playlistUrl = it },
+                enabled = !isImporting,
                 label = { Text("M3U URL", color = phosphorGreen, fontFamily = FontFamily.Monospace) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = phosphorGreen,
                     unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
                     focusedLabelColor = phosphorGreen,
                     focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
+                    unfocusedTextColor = Color.White,
+                    disabledBorderColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledLabelColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledTextColor = Color.Gray
                 ),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
@@ -785,8 +812,10 @@ fun RetroSettingsMenu(
                 ),
                 keyboardActions = KeyboardActions(
                     onDone = {
-                        if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty()) {
+                        if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty() && !isImporting) {
                             viewModel.importPlaylist(playlistName, playlistUrl)
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
                         }
                     }
                 )
@@ -794,31 +823,98 @@ fun RetroSettingsMenu(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Load Playlist button
-            var isLoadButtonFocused by remember { mutableStateOf(false) }
-            Button(
-                onClick = {
-                    if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty()) {
-                        viewModel.importPlaylist(playlistName, playlistUrl)
-                    } else {
-                        Toast.makeText(context, "PLEASE FILL IN BOTH FIELDS", Toast.LENGTH_SHORT).show()
+            // Load Playlist button / Progress Indicator
+            if (isImporting) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, amber, RoundedCornerShape(4.dp))
+                        .background(Color(0xFF161002))
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "⚡ LOADING PLAYLIST...",
+                            color = amber,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "$importProgressPercent%",
+                            color = amber,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-                },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isLoadButtonFocused) phosphorGreen else Color.Transparent
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { isLoadButtonFocused = it.isFocused }
-                    .border(1.dp, phosphorGreen),
-                shape = RoundedCornerShape(4.dp)
-            ) {
-                Text(
-                    text = "IMPORT PLAYLIST SOURCE",
-                    color = if (isLoadButtonFocused) Color.Black else phosphorGreen,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    // Retro-character progress bar [████░░░░░░]
+                    val totalTicks = 20
+                    val filledTicks = (importProgressPercent * totalTicks / 100).coerceIn(0, totalTicks)
+                    val emptyTicks = totalTicks - filledTicks
+                    val progressBarString = "[" + "█".repeat(filledTicks) + "░".repeat(emptyTicks) + "]"
+
+                    Text(
+                        text = progressBarString,
+                        color = amber,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "STATUS: ${importStatus.uppercase()}",
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
+                    Text(
+                        text = "CHANNELS FETCHED: $importChannelCount",
+                        color = phosphorGreen,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
+                var isLoadButtonFocused by remember { mutableStateOf(false) }
+                Button(
+                    onClick = {
+                        if (playlistName.isNotEmpty() && playlistUrl.isNotEmpty()) {
+                            viewModel.importPlaylist(playlistName, playlistUrl)
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                        } else {
+                            Toast.makeText(context, "PLEASE FILL IN BOTH FIELDS", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isLoadButtonFocused) phosphorGreen else Color.Transparent
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { isLoadButtonFocused = it.isFocused }
+                        .border(1.dp, phosphorGreen),
+                    shape = RoundedCornerShape(4.dp)
+                ) {
+                    Text(
+                        text = "IMPORT PLAYLIST SOURCE",
+                        color = if (isLoadButtonFocused) Color.Black else phosphorGreen,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(18.dp))
