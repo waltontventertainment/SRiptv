@@ -20,12 +20,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: IptvRepository
     private val sharedPrefs = application.getSharedPreferences("sr_iptv_prefs", Context.MODE_PRIVATE)
-    private val appWithAttribution = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-        application.createAttributionContext("media_playback")
-    } else {
-        application
-    }
-    private val audioManager = appWithAttribution.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
 
     // Data streams
     val playlists: StateFlow<List<M3UPlaylist>>

@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import android.app.UiModeManager
 import android.content.res.Configuration
@@ -46,6 +47,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -59,6 +62,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
@@ -98,6 +102,7 @@ class MainActivity : ComponentActivity() {
     // Modern visual UI states
     private var showSettings by mutableStateOf(false)
     private var showChannelGuide by mutableStateOf(false)
+    private var showSearchInGuide by mutableStateOf(false)
     private var showExitDialog by mutableStateOf(false)
     private var showPlayerControls by mutableStateOf(false)
     private var crtState by mutableStateOf(CrtScreenState.IDLE)
@@ -124,6 +129,12 @@ class MainActivity : ComponentActivity() {
             val keyboardController = LocalSoftwareKeyboardController.current
             viewModel = viewModel()
             
+            var showSplash by remember { mutableStateOf(true) }
+            LaunchedEffect(Unit) {
+                delay(4000)
+                showSplash = false
+            }
+            
             // Observe the CRT screen off animations
             LaunchedEffect(crtState) {
                 if (crtState == CrtScreenState.OFF) {
@@ -137,14 +148,10 @@ class MainActivity : ComponentActivity() {
             ) {
                 val context = LocalContext.current
                 val audioManager = remember(context) {
-                    val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                        context.createAttributionContext("media_playback")
-                    } else {
-                        context
-                    }
-                    attributionContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                    context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
                 }
-                var accumulatedDrag by remember { mutableStateOf(0f) }
+                var accumulatedDragX by remember { mutableStateOf(0f) }
+                var accumulatedDragY by remember { mutableStateOf(0f) }
 
                 Box(modifier = Modifier
                     .fillMaxSize()
@@ -155,30 +162,53 @@ class MainActivity : ComponentActivity() {
                     }
                     .pointerInput(isTvDevice) {
                         if (!isTvDevice) {
-                            detectVerticalDragGestures(
-                                onDragStart = { accumulatedDrag = 0f },
-                                onDragEnd = { accumulatedDrag = 0f },
-                                onVerticalDrag = { change, dragAmount ->
+                            detectDragGestures(
+                                onDragStart = {
+                                    accumulatedDragX = 0f
+                                    accumulatedDragY = 0f
+                                },
+                                onDragEnd = {
+                                    accumulatedDragX = 0f
+                                    accumulatedDragY = 0f
+                                },
+                                onDragCancel = {
+                                    accumulatedDragX = 0f
+                                    accumulatedDragY = 0f
+                                },
+                                onDrag = { change, dragAmount ->
                                     change.consume()
-                                    accumulatedDrag += dragAmount
-                                    if (kotlin.math.abs(accumulatedDrag) > 150f) {
-                                        val isLeftSide = change.position.x < size.width / 2f
-                                        if (isLeftSide) {
-                                            if (accumulatedDrag < 0) {
-                                                viewModel.zapNextChannel()
-                                            } else {
-                                                viewModel.zapPreviousChannel()
-                                            }
+                                    accumulatedDragX += dragAmount.x
+                                    accumulatedDragY += dragAmount.y
+
+                                    // Handle vertical swipes (Up/Down) for channel changes
+                                    if (kotlin.math.abs(accumulatedDragY) > 150f) {
+                                        if (accumulatedDragY < 0) {
+                                            viewModel.zapNextChannel()
                                         } else {
-                                            val maxVolume = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-                                            val currentVolume = audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
-                                            if (accumulatedDrag < 0) {
-                                                audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, android.media.AudioManager.FLAG_SHOW_UI)
+                                            viewModel.zapPreviousChannel()
+                                        }
+                                        accumulatedDragX = 0f
+                                        accumulatedDragY = 0f
+                                    }
+
+                                    // Handle horizontal swipes
+                                    if (kotlin.math.abs(accumulatedDragX) > 150f) {
+                                        if (accumulatedDragX < 0) {
+                                            // Swipe Right to Left (Finger moves Left) -> Open Settings
+                                            showSettings = true
+                                        } else {
+                                            // Swipe Left to Right (Finger moves Right)
+                                            if (!showChannelGuide) {
+                                                // 1st Swipe: Open Categories (Channel Guide)
+                                                showChannelGuide = true
+                                                showSearchInGuide = false
                                             } else {
-                                                audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, android.media.AudioManager.FLAG_SHOW_UI)
+                                                // 2nd Swipe: Show Search box inside the guide drawer
+                                                showSearchInGuide = true
                                             }
                                         }
-                                        accumulatedDrag = 0f
+                                        accumulatedDragX = 0f
+                                        accumulatedDragY = 0f
                                     }
                                 }
                             )
@@ -192,7 +222,6 @@ class MainActivity : ComponentActivity() {
                     val isStreamError by viewModel.isStreamError.collectAsState()
                     val streamErrorMessage by viewModel.streamErrorMessage.collectAsState()
                     val isStreamBuffering by viewModel.isStreamBuffering.collectAsState()
-                    val isKeyboardVisible by viewModel.isKeyboardVisible.collectAsState()
 
                     val isGridViewVisible by viewModel.isGridViewVisible.collectAsState()
 
@@ -203,12 +232,7 @@ class MainActivity : ComponentActivity() {
                             onPlayerCreated = { player ->
                                 exoPlayer = player
                                 // Setup media session
-                                val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                                    this@MainActivity.createAttributionContext("media_playback")
-                                } else {
-                                    this@MainActivity
-                                }
-                                mediaSession = MediaSession.Builder(attributionContext, player).build()
+                                mediaSession = MediaSession.Builder(this@MainActivity, player).build()
                             },
                             onPlayerReleased = {
                                 mediaSession?.release()
@@ -311,7 +335,14 @@ class MainActivity : ComponentActivity() {
                     PinEntryDialog(viewModel = viewModel)
 
                     // 2h. Country/Category Selection Overlay
-                    CountrySelectionOverlay(viewModel = viewModel)
+                    CountrySelectionOverlay(
+                        viewModel = viewModel,
+                        onCategorySelected = { category ->
+                            viewModel.setCategory(category)
+                            showChannelGuide = true
+                            viewModel.toggleCountryMenu(false)
+                        }
+                    )
 
                     // 2g. CRT Power-On Effect (Removed per user request)
                     // CrtPowerOnEffect(viewModel = viewModel)
@@ -325,21 +356,15 @@ class MainActivity : ComponentActivity() {
                     // 4b. Tuning Static Transition Effect (Removed per user request)
                     // TuningStaticOverlay(isActive = isStaticActive)
 
-                    // 4c. Modern Search Keyboard
-                    if (isKeyboardVisible) {
-                        SearchKeyboard(
-                            viewModel = viewModel,
-                            onClose = { viewModel.toggleKeyboard(false) }
-                        )
-                    }
-
-                    // 5. Gear icon (top gear Settings trigger) - Hidden on TV
+                    // 5. Gear icon (top gear Settings trigger) - Removed per user request since swipe triggers it
+                    /*
                     if (!isTvDevice) {
                         SettingsTriggerButton(
                             onTrigger = { showSettings = true },
                             visible = !showSettings && !showExitDialog && !showChannelGuide
                         )
                     }
+                    */
 
                     // 5b. Mobile Navigation Buttons (Removed per user request, replaced by swipe gestures)
 
@@ -368,13 +393,17 @@ class MainActivity : ComponentActivity() {
                     ) {
                         ChannelGuideDrawer(
                             viewModel = viewModel,
+                            showSearch = showSearchInGuide,
+                            onShowSearchChange = { showSearchInGuide = it },
                             onClose = { 
                                 keyboardController?.hide()
                                 showChannelGuide = false 
+                                showSearchInGuide = false
                             },
                             onOpenSettings = {
                                 keyboardController?.hide()
                                 showChannelGuide = false
+                                showSearchInGuide = false
                                 showSettings = true
                             }
                         )
@@ -402,6 +431,15 @@ class MainActivity : ComponentActivity() {
                             player = exoPlayer,
                             onClose = { showPlayerControls = false }
                         )
+                    }
+
+                    // 9c. Animated Startup Splash Screen (TV Banner)
+                    AnimatedVisibility(
+                        visible = showSplash,
+                        enter = fadeIn(animationSpec = tween(600)),
+                        exit = fadeOut(animationSpec = tween(800))
+                    ) {
+                        IptvSplashScreen()
                     }
 
                     // 10. Modern Screen Off Effect overlay
@@ -458,9 +496,15 @@ class MainActivity : ComponentActivity() {
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 if (isLocked) return true
-                if (!showSettings && !showExitDialog && !showChannelGuide) {
-                    showChannelGuide = true
-                    return true
+                if (!showSettings && !showExitDialog) {
+                    if (!showChannelGuide) {
+                        showChannelGuide = true
+                        showSearchInGuide = false
+                        return true
+                    } else {
+                        showSearchInGuide = true
+                        return true
+                    }
                 }
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
@@ -540,11 +584,15 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_PROG_GREEN -> {
-                viewModel.toggleKeyboard(!viewModel.isKeyboardVisible.value)
+                if (!showChannelGuide) {
+                    showChannelGuide = true
+                    showSearchInGuide = true
+                } else {
+                    showSearchInGuide = !showSearchInGuide
+                }
                 return true
             }
             KeyEvent.KEYCODE_PROG_YELLOW -> {
-                viewModel.updateKeyboardInput("")
                 return true
             }
             KeyEvent.KEYCODE_PROG_BLUE -> {
@@ -552,7 +600,10 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
-                if (showSettings) {
+                if (showSearchInGuide) {
+                    showSearchInGuide = false
+                    return true
+                } else if (showSettings) {
                     showSettings = false
                     return true
                 } else if (showPlayerControls) {
@@ -619,13 +670,6 @@ fun AndroidVideoPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val attributionContext = remember(context) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-            context.createAttributionContext("media_playback")
-        } else {
-            context
-        }
-    }
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
     val playlist by viewModel.playbackPlaylist.collectAsState()
@@ -638,7 +682,7 @@ fun AndroidVideoPlayer(
     }
 
     // Initialize Player
-    LaunchedEffect(attributionContext) {
+    LaunchedEffect(context) {
         if (playerInstance == null) {
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
@@ -656,7 +700,7 @@ fun AndroidVideoPlayer(
                 .setReadTimeoutMs(8000)
                 .setAllowCrossProtocolRedirects(true)
             
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(attributionContext)
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
                 .setDataSourceFactory(dataSourceFactory)
 
             val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
@@ -664,7 +708,7 @@ fun AndroidVideoPlayer(
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
-            val player = ExoPlayer.Builder(attributionContext)
+            val player = ExoPlayer.Builder(context)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)
@@ -1316,16 +1360,38 @@ fun SettingsMenu(
             .padding(24.dp)
     ) {
         val scrollState = rememberScrollState()
+        var isNameFocused by remember { mutableStateOf(false) }
+        var isUrlFocused by remember { mutableStateOf(false) }
+
         Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
-            // Header
-            Text(
-                text = "SYSTEM SETTINGS",
-                color = accentColor,
-                fontSize = 20.sp,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 20.dp)
-            )
+            // Header with Close button
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "SYSTEM SETTINGS",
+                    color = accentColor,
+                    fontSize = 20.sp,
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                var isCloseFocused by remember { mutableStateOf(false) }
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier
+                        .onFocusChanged { isCloseFocused = it.isFocused }
+                        .modernFocusEffect(isCloseFocused, focusedColor = accentColor, shape = CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close Settings",
+                        tint = if (isCloseFocused) Color.Cyan else Color.White
+                    )
+                }
+            }
 
             // Input Fields Row
             Text(
@@ -1342,7 +1408,8 @@ fun SettingsMenu(
                 value = playlistName,
                 onValueChange = { playlistName = it },
                 enabled = !isImporting,
-                label = { Text("PLAYLIST LABEL", color = accentColor, fontFamily = FontFamily.SansSerif) },
+                readOnly = !isNameFocused,
+                label = { Text("PLAYLIST LABEL", color = if (isNameFocused) accentColor else Color.White.copy(alpha = 0.6f), fontFamily = FontFamily.SansSerif) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = accentColor,
                     unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
@@ -1355,9 +1422,20 @@ fun SettingsMenu(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .focusRequester(focusRequester),
+                    .focusRequester(focusRequester)
+                    .onFocusChanged { 
+                        isNameFocused = it.isFocused 
+                        if (it.isFocused) {
+                            keyboardController?.show()
+                        }
+                    },
                 singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(
+                    onNext = {
+                        focusManager.moveFocus(FocusDirection.Down)
+                    }
+                )
             )
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -1366,7 +1444,8 @@ fun SettingsMenu(
                 value = playlistUrl,
                 onValueChange = { playlistUrl = it },
                 enabled = !isImporting,
-                label = { Text("M3U PLAYLIST URL", color = accentColor, fontFamily = FontFamily.SansSerif) },
+                readOnly = !isUrlFocused,
+                label = { Text("M3U PLAYLIST URL", color = if (isUrlFocused) accentColor else Color.White.copy(alpha = 0.6f), fontFamily = FontFamily.SansSerif) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = accentColor,
                     unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
@@ -1377,7 +1456,14 @@ fun SettingsMenu(
                     disabledLabelColor = Color.White.copy(alpha = 0.1f),
                     disabledTextColor = Color.Gray
                 ),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { 
+                        isUrlFocused = it.isFocused 
+                        if (it.isFocused) {
+                            keyboardController?.show()
+                        }
+                    },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Uri,
@@ -1753,6 +1839,8 @@ fun SettingsMenu(
 @Composable
 fun ChannelGuideDrawer(
     viewModel: IptvViewModel,
+    showSearch: Boolean,
+    onShowSearchChange: (Boolean) -> Unit,
     onClose: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier
@@ -1763,11 +1851,40 @@ fun ChannelGuideDrawer(
 
     var searchQuery by remember { mutableStateOf("") }
     var showOnlyFavorites by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showSearch) {
+        if (showSearch) {
+            // Wait for composition to attach the search box
+            kotlinx.coroutines.delay(100)
+            try {
+                focusRequester.requestFocus()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        } else {
+            searchQuery = ""
+        }
+    }
     val keyboardInput by viewModel.keyboardInput.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
 
-    val filteredChannels = remember(channels, searchQuery, showOnlyFavorites, keyboardInput, selectedCategory) {
-        channels.filter { channel ->
+    val activePlaylistId = activeChannel?.playlistId
+    
+    val activePlaylistChannels = remember(channels, activePlaylistId) {
+        if (activePlaylistId != null) {
+            channels.filter { it.playlistId == activePlaylistId }
+        } else {
+            val firstPlaylistId = channels.map { it.playlistId }.firstOrNull()
+            if (firstPlaylistId != null) {
+                channels.filter { it.playlistId == firstPlaylistId }
+            } else {
+                channels
+            }
+        }
+    }
+
+    val filteredChannels = remember(activePlaylistChannels, searchQuery, showOnlyFavorites, keyboardInput, selectedCategory) {
+        activePlaylistChannels.filter { channel ->
             val effectiveSearch = if (keyboardInput.isNotEmpty()) keyboardInput else searchQuery
             val matchesSearch = if (effectiveSearch.isBlank()) true else channel.name.contains(effectiveSearch, ignoreCase = true)
             val matchesFav = if (showOnlyFavorites) channel.isFavorite else true
@@ -1776,8 +1893,8 @@ fun ChannelGuideDrawer(
         }
     }
 
-    val categories = remember(channels) {
-        listOf(null) + channels.mapNotNull { it.groupTitle }.distinct().sorted()
+    val categories = remember(activePlaylistChannels) {
+        listOf(null) + activePlaylistChannels.mapNotNull { it.groupTitle }.distinct().sorted()
     }
 
     val accentColor = Color.Cyan
@@ -1844,24 +1961,27 @@ fun ChannelGuideDrawer(
                 }
             }
 
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                label = { Text("FILTER CHANNELS", color = accentColor, fontFamily = FontFamily.SansSerif, fontSize = 10.sp) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = accentColor,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.LightGray,
-                    cursorColor = accentColor
-                ),
-                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.SansSerif),
-                singleLine = true,
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp)
-            )
+            if (showSearch) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("FILTER CHANNELS", color = accentColor, fontFamily = FontFamily.SansSerif, fontSize = 10.sp) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accentColor,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.LightGray,
+                        cursorColor = accentColor
+                    ),
+                    textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.SansSerif),
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .padding(bottom = 12.dp)
+                )
+            }
 
             LazyColumn(
                 modifier = Modifier
@@ -2042,10 +2162,6 @@ fun ChannelGuideDrawer(
             }
         }
     }
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
 }
 
 /**
@@ -2162,7 +2278,7 @@ fun EmptyTVState(modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth(0.8f)
         ) {
             AsyncImage(
-                model = R.drawable.ic_hero_banner,
+                model = R.drawable.img_tv_banner,
                 contentDescription = "Hero Banner",
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2207,6 +2323,20 @@ fun ChannelGridView(
     val accentColor = Color.Cyan
     val bgColor = Color(0xFF121212)
 
+    val activePlaylistId = activeChannel?.playlistId
+    val activePlaylistChannels = remember(channels, activePlaylistId) {
+        if (activePlaylistId != null) {
+            channels.filter { it.playlistId == activePlaylistId }
+        } else {
+            val firstPlaylistId = channels.map { it.playlistId }.firstOrNull()
+            if (firstPlaylistId != null) {
+                channels.filter { it.playlistId == firstPlaylistId }
+            } else {
+                channels
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -2250,7 +2380,7 @@ fun ChannelGridView(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                items(channels.take(18)) { channel -> // Limit to 18 for demo/performance
+                items(activePlaylistChannels.take(18)) { channel -> // Limit to 18 for demo/performance
                     GridViewItem(
                         channel = channel,
                         isPlaying = activeChannel?.id == channel.id,
@@ -2502,9 +2632,31 @@ fun SearchKeyboard(
 }
 
 @Composable
-fun CountrySelectionOverlay(viewModel: IptvViewModel) {
+fun CountrySelectionOverlay(
+    viewModel: IptvViewModel,
+    onCategorySelected: (String?) -> Unit
+) {
     val isVisible by viewModel.isCountryMenuVisible.collectAsState()
     if (!isVisible) return
+
+    val channels by viewModel.channels.collectAsState()
+    val activeChannel by viewModel.activeChannel.collectAsState()
+    val activePlaylistId = activeChannel?.playlistId
+
+    // Extract unique categories from channels of the active source (playlist) only
+    val categories = remember(channels, activePlaylistId) {
+        val filtered = if (activePlaylistId != null) {
+            channels.filter { it.playlistId == activePlaylistId }
+        } else {
+            val firstPlaylistId = channels.map { it.playlistId }.firstOrNull()
+            if (firstPlaylistId != null) {
+                channels.filter { it.playlistId == firstPlaylistId }
+            } else {
+                channels
+            }
+        }
+        listOf(null) + filtered.mapNotNull { it.groupTitle }.distinct().sorted()
+    }
 
     val accentColor = Color.Cyan
     val bgColor = Color(0xFF121212)
@@ -2512,14 +2664,18 @@ fun CountrySelectionOverlay(viewModel: IptvViewModel) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.8f)),
+            .background(Color.Black.copy(alpha = 0.85f))
+            .clickable { viewModel.toggleCountryMenu(false) },
         contentAlignment = Alignment.Center
     ) {
         Column(
             modifier = Modifier
-                .background(bgColor, RoundedCornerShape(12.dp))
-                .border(1.dp, accentColor, RoundedCornerShape(12.dp))
-                .padding(48.dp),
+                .fillMaxWidth(0.85f)
+                .fillMaxHeight(0.8f)
+                .background(bgColor, RoundedCornerShape(16.dp))
+                .border(2.dp, accentColor, RoundedCornerShape(16.dp))
+                .padding(32.dp)
+                .clickable(enabled = false) { },
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
@@ -2527,29 +2683,83 @@ fun CountrySelectionOverlay(viewModel: IptvViewModel) {
                 color = accentColor,
                 fontFamily = FontFamily.SansSerif,
                 fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
+            )
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Text(
+                text = "ACTIVE SOURCE PLAYLIST CATEGORIES",
+                color = Color.White.copy(alpha = 0.5f),
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 11.sp,
                 fontWeight = FontWeight.Bold
             )
+            
             Spacer(modifier = Modifier.height(24.dp))
-            val items = listOf(
-                "BANGLADESH",
-                "INDIA",
-                "INTERNATIONAL"
-            )
-            items.forEachIndexed { index, item ->
-                Text(
-                    text = item,
-                    color = Color.White,
-                    fontFamily = FontFamily.SansSerif,
-                    fontSize = 20.sp,
-                    modifier = Modifier.padding(vertical = 12.dp)
-                )
+            
+            if (categories.isEmpty() || (categories.size == 1 && categories[0] == null)) {
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "NO CATEGORIES DETECTED IN ACTIVE PLAYLIST",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 16.sp,
+                        fontFamily = FontFamily.SansSerif
+                    )
+                }
+            } else {
+                androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Adaptive(minSize = 160.dp),
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    contentPadding = PaddingValues(8.dp)
+                ) {
+                    items(categories.size) { index ->
+                        val category = categories[index]
+                        val categoryLabel = category ?: "ALL CHANNELS"
+                        var isFocused by remember { mutableStateOf(false) }
+                        
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(60.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isFocused) accentColor.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.03f))
+                                .onFocusChanged { isFocused = it.isFocused }
+                                .modernFocusEffect(isFocused, focusedColor = accentColor, unfocusedColor = Color.White.copy(alpha = 0.1f))
+                                .clickable {
+                                    onCategorySelected(category)
+                                }
+                                .focusable(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = categoryLabel.uppercase(),
+                                color = if (isFocused) accentColor else Color.White,
+                                fontFamily = FontFamily.SansSerif,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        }
+                    }
+                }
             }
+            
             Spacer(modifier = Modifier.height(24.dp))
+            
             Text(
-                text = "USE NAVIGATION KEYS TO SELECT",
+                text = "CLICK / SELECT TO FILTER AND VIEW CHANNELS",
                 color = accentColor.copy(alpha = 0.7f),
                 fontFamily = FontFamily.SansSerif,
-                fontSize = 14.sp
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
             )
         }
     }
@@ -2855,3 +3065,104 @@ fun PlayerControlsOverlay(
         }
     }
 }
+
+@Composable
+fun IptvSplashScreen() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF090A0F)),
+        contentAlignment = Alignment.Center
+    ) {
+        // Glowing futuristic digital backdrop
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color.Cyan.copy(alpha = 0.12f),
+                            Color.Transparent
+                        ),
+                        radius = 1400f
+                    )
+                )
+        )
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth(0.82f)
+        ) {
+            // Elegant brand heading
+            Text(
+                text = "IPTV MEDIA HUB",
+                color = Color.White,
+                fontSize = 26.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 4.sp,
+                modifier = Modifier.padding(bottom = 24.dp)
+            )
+
+            // The beautifully framed TV banner showing the user's customized portrait character
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .border(
+                        width = 2.dp,
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color.Cyan, Color(0xFF9013FE))
+                        ),
+                        shape = RoundedCornerShape(20.dp)
+                    )
+            ) {
+                AsyncImage(
+                    model = R.drawable.img_tv_banner,
+                    contentDescription = "IPTV Customized Welcome Banner",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                )
+                
+                // Vignette gradient for dark immersive contrast
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.5f))
+                            )
+                        )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // Subtitle status indicator
+            Text(
+                text = "INITIALIZING SECURE PORTAL...",
+                color = Color.Cyan,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+                modifier = Modifier.alpha(0.8f)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Progress bar
+            LinearProgressIndicator(
+                color = Color.Cyan,
+                trackColor = Color.White.copy(alpha = 0.1f),
+                modifier = Modifier
+                    .width(180.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+            )
+        }
+    }
+}
+
