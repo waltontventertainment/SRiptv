@@ -20,7 +20,12 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: IptvRepository
     private val sharedPrefs = application.getSharedPreferences("sr_iptv_prefs", Context.MODE_PRIVATE)
-    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    private val appWithAttribution = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+        application.createAttributionContext("media_playback")
+    } else {
+        application
+    }
+    private val audioManager = appWithAttribution.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
 
     // Data streams
     val playlists: StateFlow<List<M3UPlaylist>>
@@ -477,15 +482,22 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
                 _previousChannel.value = current
             }
             
-            checkChannelLock(channel)
-            _activeChannel.value = channel
+            var finalChannel = channel
+            if (!channel.isActive) {
+                repository.updateChannelActiveStatus(channel.id, true)
+                finalChannel = channel.copy(isActive = true)
+            }
+            
+            checkChannelLock(finalChannel)
+            _activeChannel.value = finalChannel
 
             // Update playback playlist for pre-loading (5-6 channels ahead)
-            val allActive = channels.value.filter { it.isActive }
-            val index = allActive.indexOfFirst { it.id == channel.id }
+            val allActive = channels.value.map { if (it.id == finalChannel.id) finalChannel else it }.filter { it.isActive }
+            val index = allActive.indexOfFirst { it.id == finalChannel.id }
             if (index != -1) {
                 _playbackPlaylist.value = allActive
                 _playbackIndex.value = index
+                preheatNextChannels(allActive, index)
             }
             
             // If locked, show PIN entry immediately
@@ -494,14 +506,14 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             // Look up the playlist to get its source URL
-            val playlist = playlists.value.find { it.id == channel.playlistId }
+            val playlist = playlists.value.find { it.id == finalChannel.playlistId }
             val sourceUrl = playlist?.url
             _selectedSourceUrl.value = sourceUrl
 
             // Save state
             sharedPrefs.edit()
-                .putInt("last_watched_channel_num", channel.channelNumber)
-                .putString("last_selected_source_url", sourceUrl)
+                .putInt("last_watched_channel_num", finalChannel.channelNumber)
+                .putString("last_selected_source_url", sourceUrl ?: "")
                 .apply()
 
             // Reset signal/stream health indicators for the new channel
@@ -785,7 +797,65 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
                     targetChannel = channelList.first()
                 }
 
-                _activeChannel.value = targetChannel
+                setActiveChannel(targetChannel)
+            }
+        }
+    }
+
+    private var preheatJob: Job? = null
+
+    private fun preheatNextChannels(allActive: List<IPTVChannel>, currentIndex: Int) {
+        preheatJob?.cancel()
+        preheatJob = viewModelScope.launch(Dispatchers.IO) {
+            if (allActive.isEmpty() || currentIndex == -1) return@launch
+            
+            // Wait 1.5 seconds so we do not interfere with the active channel's immediate buffering/playback startup
+            delay(1500)
+            
+            val channelsToPreheat = mutableListOf<IPTVChannel>()
+            
+            // Previous 1 channel
+            if (allActive.size > 1) {
+                val prevIndex = (currentIndex - 1 + allActive.size) % allActive.size
+                channelsToPreheat.add(allActive[prevIndex])
+            }
+            
+            // Next 5 channels
+            val nextCount = minOf(5, allActive.size - 1)
+            for (i in 1..nextCount) {
+                val nextIndex = (currentIndex + i) % allActive.size
+                if (nextIndex != currentIndex && !channelsToPreheat.any { it.id == allActive[nextIndex].id }) {
+                    channelsToPreheat.add(allActive[nextIndex])
+                }
+            }
+            
+            for (channel in channelsToPreheat) {
+                val streamUrl = channel.url
+                if (streamUrl.isBlank()) continue
+                
+                // Extra short delay between channels to avoid network congestion and CPU overhead on low-RAM TVs
+                delay(300)
+                
+                try {
+                    val url = java.net.URL(streamUrl)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 1500
+                    conn.readTimeout = 1500
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    conn.requestMethod = "GET"
+                    
+                    val responseCode = conn.responseCode
+                    if (responseCode in 200..299) {
+                        // Read a single byte to ensure connection handshake is complete and warm in the pool
+                        conn.inputStream.use { input ->
+                            input.read()
+                        }
+                    }
+                    conn.disconnect()
+                    Log.d("IptvViewModel", "Warm-up connection successful for ${channel.name}")
+                } catch (e: Exception) {
+                    Log.w("IptvViewModel", "Preheat warm-up failed for ${channel.name}: ${e.message}")
+                }
             }
         }
     }

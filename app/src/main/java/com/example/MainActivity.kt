@@ -136,7 +136,14 @@ class MainActivity : ComponentActivity() {
                 color = Color.Black
             ) {
                 val context = LocalContext.current
-                val audioManager = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
+                val audioManager = remember(context) {
+                    val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        context.createAttributionContext("media_playback")
+                    } else {
+                        context
+                    }
+                    attributionContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                }
                 var accumulatedDrag by remember { mutableStateOf(0f) }
 
                 Box(modifier = Modifier
@@ -196,7 +203,12 @@ class MainActivity : ComponentActivity() {
                             onPlayerCreated = { player ->
                                 exoPlayer = player
                                 // Setup media session
-                                mediaSession = MediaSession.Builder(this@MainActivity, player).build()
+                                val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                                    this@MainActivity.createAttributionContext("media_playback")
+                                } else {
+                                    this@MainActivity
+                                }
+                                mediaSession = MediaSession.Builder(attributionContext, player).build()
                             },
                             onPlayerReleased = {
                                 mediaSession?.release()
@@ -607,6 +619,13 @@ fun AndroidVideoPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val attributionContext = remember(context) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            context.createAttributionContext("media_playback")
+        } else {
+            context
+        }
+    }
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
     val playlist by viewModel.playbackPlaylist.collectAsState()
@@ -619,25 +638,25 @@ fun AndroidVideoPlayer(
     }
 
     // Initialize Player
-    LaunchedEffect(Unit) {
+    LaunchedEffect(attributionContext) {
         if (playerInstance == null) {
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    15000, // minBufferMs
-                    50000, // maxBufferMs
-                    1000,  // bufferForPlaybackMs
-                    2500   // bufferForPlaybackAfterRebufferMs
+                    2000,  // minBufferMs (extremely low buffer requirements for instant play)
+                    5000,  // maxBufferMs (protects low-RAM 500MB devices!)
+                    500,   // bufferForPlaybackMs (starts playing with just 500ms of audio/video buffered)
+                    1000   // bufferForPlaybackAfterRebufferMs (fast recovery on rebuffer)
                 )
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
             val dataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .setConnectTimeoutMs(20000)
-                .setReadTimeoutMs(20000)
+                .setConnectTimeoutMs(8000)
+                .setReadTimeoutMs(8000)
                 .setAllowCrossProtocolRedirects(true)
             
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(attributionContext)
                 .setDataSourceFactory(dataSourceFactory)
 
             val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
@@ -645,14 +664,14 @@ fun AndroidVideoPlayer(
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
-            val player = ExoPlayer.Builder(context)
+            val player = ExoPlayer.Builder(attributionContext)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)
                 .setHandleAudioBecomingNoisy(true)
                 .build().apply {
                     playWhenReady = true
-                    repeatMode = ExoPlayer.REPEAT_MODE_ONE
+                    repeatMode = ExoPlayer.REPEAT_MODE_OFF
                     videoScalingMode = androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                 }
 
@@ -707,13 +726,21 @@ fun AndroidVideoPlayer(
             if (playlist.isEmpty() || playlistIndex == -1) return@LaunchedEffect
 
             val currentMediaItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
-            val incomingMediaItems = playlist.map { ch ->
-                MediaItem.Builder()
-                    .setUri(ch.url)
-                    .setMediaId(ch.id.toString())
-                    .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(ch.name).build())
-                    .build()
+            val incomingMediaItems = playlist.mapNotNull { ch ->
+                if (ch.url.isBlank()) return@mapNotNull null
+                try {
+                    MediaItem.Builder()
+                        .setUri(ch.url)
+                        .setMediaId(ch.id.toString())
+                        .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(ch.name).build())
+                        .build()
+                } catch (e: Exception) {
+                    android.util.Log.e("AndroidVideoPlayer", "Error creating MediaItem for channel: ${ch.name} with URL: ${ch.url}", e)
+                    null
+                }
             }
+
+            if (incomingMediaItems.isEmpty()) return@LaunchedEffect
 
             // Check if playlist has changed significantly or we just need to seek
             val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size && 
