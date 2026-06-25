@@ -1260,8 +1260,12 @@ fun SettingsTriggerButton(
     val focusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
-        // Auto-request focus so it's directly tactile with physical buttons
-        focusRequester.requestFocus()
+        kotlinx.coroutines.delay(100)
+        try {
+            focusRequester.requestFocus()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     Box(
@@ -1829,7 +1833,12 @@ fun SettingsMenu(
     }
 
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+        kotlinx.coroutines.delay(100)
+        try {
+            focusRequester.requestFocus()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }
 
@@ -2257,7 +2266,12 @@ fun ExitConfirmationDialog(
     }
 
     LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
+        kotlinx.coroutines.delay(100)
+        try {
+            focusRequester.requestFocus()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }
 
@@ -2880,7 +2894,14 @@ fun PinEntryDialog(viewModel: IptvViewModel) {
                 } else false
             }.focusable()) {
                 val focusRequester = remember { FocusRequester() }
-                LaunchedEffect(Unit) { focusRequester.requestFocus() }
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(100)
+                    try {
+                        focusRequester.requestFocus()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
                 Box(modifier = Modifier.focusRequester(focusRequester).focusable())
             }
         }
