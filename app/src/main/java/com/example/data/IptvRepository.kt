@@ -23,6 +23,10 @@ class IptvRepository(private val iptvDao: IptvDao) {
         iptvDao.getChannelCount()
     }
 
+    suspend fun updateChannelActiveStatus(channelId: Int, isActive: Boolean) = withContext(Dispatchers.IO) {
+        iptvDao.updateChannelActiveStatus(channelId, isActive)
+    }
+
     suspend fun getChannelByNumber(num: Int): IPTVChannel? = withContext(Dispatchers.IO) {
         iptvDao.getChannelByNumber(num)
     }
@@ -231,6 +235,11 @@ class IptvRepository(private val iptvDao: IptvDao) {
                     currentName = parseTagValue(trimmed, "tvg-name")
                     currentLogoUrl = parseTagValue(trimmed, "tvg-logo")
                     currentGroup = parseTagValue(trimmed, "group-title")
+                    val currentCountry = parseTagValue(trimmed, "tvg-country")
+                    
+                    if (currentGroup.isNullOrEmpty() && !currentCountry.isNullOrEmpty()) {
+                        currentGroup = currentCountry
+                    }
 
                     // Fallback to name after last comma if tvg-name is missing or empty
                     val commaIndex = trimmed.lastIndexOf(',')
@@ -253,7 +262,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
                                 url = streamUrl,
                                 logoUrl = currentLogoUrl,
                                 groupTitle = currentGroup ?: "General",
-                                channelNumber = channelIndex++
+                                channelNumber = 0 // Will be assigned later
                             )
                         )
                         // Reset transient fields
@@ -281,18 +290,35 @@ class IptvRepository(private val iptvDao: IptvDao) {
             }
 
             if (channels.isNotEmpty()) {
-                onProgress("SAVING ${channels.size} CHANNELS TO DATABASE...", 92, channels.size)
+                onProgress("SORTING CHANNELS...", 90, channels.size)
+                
+                // Country-wise sorting (BD -> IN -> Others)
+                val sortedChannels = channels.sortedWith { ch1, ch2 ->
+                    val getPriority = { group: String? ->
+                        val lower = group?.lowercase() ?: ""
+                        if (lower.contains("bangladesh") || lower.contains("bd")) 1
+                        else if (lower.contains("india") || lower.contains("in")) 2
+                        else 3
+                    }
+                    val p1 = getPriority(ch1.groupTitle)
+                    val p2 = getPriority(ch2.groupTitle)
+                    p1.compareTo(p2)
+                }.mapIndexed { index, channel ->
+                    channel.copy(channelNumber = startChannelNum + index)
+                }
+
+                onProgress("SAVING ${sortedChannels.size} CHANNELS TO DATABASE...", 92, sortedChannels.size)
                 
                 // Save in batches of 500 to prevent SQLite bulk insert failures
                 val chunkSize = 500
-                val totalChunks = (channels.size + chunkSize - 1) / chunkSize
-                channels.chunked(chunkSize).forEachIndexed { index, batch ->
+                val totalChunks = (sortedChannels.size + chunkSize - 1) / chunkSize
+                sortedChannels.chunked(chunkSize).forEachIndexed { index, batch ->
                     iptvDao.insertChannels(batch)
                     val percent = 92 + ((index + 1) * 8 / totalChunks).coerceIn(0, 8)
-                    onProgress("SAVING CHANNELS (${percent}%)...", percent, channels.size)
+                    onProgress("SAVING CHANNELS (${percent}%)...", percent, sortedChannels.size)
                 }
                 
-                onProgress("IMPORT COMPLETED!", 100, channels.size)
+                onProgress("IMPORT COMPLETED!", 100, sortedChannels.size)
                 Log.d("IptvRepository", "Imported ${channels.size} channels.")
                 Result.success(Unit)
             } else {

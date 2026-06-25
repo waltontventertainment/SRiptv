@@ -23,11 +23,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import android.app.UiModeManager
+import android.content.res.Configuration
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import kotlinx.coroutines.launch
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -46,6 +54,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -86,25 +95,33 @@ class MainActivity : ComponentActivity() {
     private var exoPlayer: ExoPlayer? = null
     private var mediaSession: MediaSession? = null
 
-    // Retro visual UI states
+    // Modern visual UI states
     private var showSettings by mutableStateOf(false)
     private var showChannelGuide by mutableStateOf(false)
     private var showExitDialog by mutableStateOf(false)
     private var showPlayerControls by mutableStateOf(false)
     private var crtState by mutableStateOf(CrtScreenState.IDLE)
+    private var isTvDevice by mutableStateOf(false)
 
-    // Retro Bitmap Fonts
-    private val retroFonts = listOf(
-        FontFamily.Monospace,
+    // Modern System Fonts
+    private val modernFonts = listOf(
+        FontFamily.SansSerif,
         FontFamily.Serif,
-        FontFamily.SansSerif
+        FontFamily.Default
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Detect if running on a TV (Television or Leanback feature)
+        val uiModeManager = getSystemService(UI_MODE_SERVICE) as UiModeManager
+        isTvDevice = uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+                     packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK) ||
+                     packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_TELEVISION)
+
         setContent {
+            val keyboardController = LocalSoftwareKeyboardController.current
             viewModel = viewModel()
             
             // Observe the CRT screen off animations
@@ -118,7 +135,49 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxSize(),
                 color = Color.Black
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                val context = LocalContext.current
+                val audioManager = remember { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
+                var accumulatedDrag by remember { mutableStateOf(0f) }
+
+                Box(modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures {
+                            viewModel.showOsd()
+                        }
+                    }
+                    .pointerInput(isTvDevice) {
+                        if (!isTvDevice) {
+                            detectVerticalDragGestures(
+                                onDragStart = { accumulatedDrag = 0f },
+                                onDragEnd = { accumulatedDrag = 0f },
+                                onVerticalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    accumulatedDrag += dragAmount
+                                    if (kotlin.math.abs(accumulatedDrag) > 150f) {
+                                        val isLeftSide = change.position.x < size.width / 2f
+                                        if (isLeftSide) {
+                                            if (accumulatedDrag < 0) {
+                                                viewModel.zapNextChannel()
+                                            } else {
+                                                viewModel.zapPreviousChannel()
+                                            }
+                                        } else {
+                                            val maxVolume = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                                            val currentVolume = audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+                                            if (accumulatedDrag < 0) {
+                                                audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, android.media.AudioManager.FLAG_SHOW_UI)
+                                            } else {
+                                                audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, android.media.AudioManager.FLAG_SHOW_UI)
+                                            }
+                                        }
+                                        accumulatedDrag = 0f
+                                    }
+                                }
+                            )
+                        }
+                    }
+                ) {
                     // 1. Core ExoPlayer screen
                     val activeChannel by viewModel.activeChannel.collectAsState()
                     val isStaticActive by viewModel.isStaticActive.collectAsState()
@@ -152,16 +211,16 @@ class MainActivity : ComponentActivity() {
 
                     // Grid View Overlay
                     if (isGridViewVisible) {
-                        RetroGridView(
+                        ChannelGridView(
                             viewModel = viewModel,
                             onClose = { viewModel.toggleGridView() }
                         )
                     }
 
-                    // 2. Retro Static Noise overlay (ঝিরঝির)
-                    if (isStaticActive || viewModel.isTuning.collectAsState().value || isStreamError) {
-                        CrtStaticNoise()
-                    }
+                    // 2. Retro Static Noise overlay (Removed per user request to provide clean video)
+                    // if (isStaticActive || viewModel.isTuning.collectAsState().value || isStreamError) {
+                    //    CrtStaticNoise()
+                    // }
 
                     // 2b. Stream Error Warning Box Overlay (CRT No Signal)
                     if (isStreamError && !isStaticActive) {
@@ -175,70 +234,55 @@ class MainActivity : ComponentActivity() {
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center,
                                 modifier = Modifier
-                                    .border(2.dp, Color.Red, RoundedCornerShape(0.5.vw()))
-                                    .background(Color(0xFF2A0C0C))
+                                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
                                     .padding(4.vw())
                             ) {
                                 Text(
-                                    text = if (streamErrorMessage.contains("RECONNECTING")) "📡 SIGNAL LOST 📡" else "⚠️ NO SIGNAL ⚠️",
-                                    color = Color.Red,
-                                    fontFamily = FontFamily.Monospace,
+                                    text = if (streamErrorMessage.contains("RECONNECTING")) "CONNECTING..." else "CONTENT UNAVAILABLE",
+                                    color = Color.White,
+                                    fontFamily = FontFamily.SansSerif,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 2.5.vh().value.sp
                                 )
                                 Spacer(modifier = Modifier.height(1.vh()))
                                 Text(
-                                    text = "CHECK PLAYLIST SOURCE OR NETWORK",
-                                    color = Color.White,
-                                    fontFamily = FontFamily.Monospace,
+                                    text = "PLEASE CHECK YOUR CONNECTION",
+                                    color = Color.LightGray,
+                                    fontFamily = FontFamily.SansSerif,
                                     fontSize = 1.5.vh().value.sp
                                 )
                                 if (streamErrorMessage.isNotEmpty()) {
                                     Spacer(modifier = Modifier.height(0.8.vh()))
                                     Text(
                                         text = streamErrorMessage.uppercase(),
-                                        color = Color.Yellow,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 1.2.vh().value.sp
+                                        color = Color.Red,
+                                        fontFamily = FontFamily.SansSerif,
+                                        fontSize = 1.2.vh().value.sp,
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                             }
                         }
                     }
 
-                    // 2c. Stream Buffering / "Locking Signal" Overlay indicator
+                    // 2c. Stream Buffering Indicator
                     if (isStreamBuffering && !isStaticActive && !isStreamError) {
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .padding(4.vw()),
-                            contentAlignment = Alignment.TopEnd
+                                .fillMaxSize(),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .background(Color(0xFF1A120A), RoundedCornerShape(0.4.vw()))
-                                    .border(1.dp, Color(0xFFFFB000), RoundedCornerShape(0.4.vw()))
-                                    .padding(horizontal = 2.vw(), vertical = 1.vh())
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .background(Color(0xFFFFB000), CircleShape)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "LOCKING SIGNAL...",
-                                    color = Color(0xFFFFB000),
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                            androidx.compose.material3.CircularProgressIndicator(
+                                color = Color.Cyan,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(48.dp)
+                            )
                         }
                     }
 
-                    // 2d. Retro Audio Spectrum Visualizer
+                    // 2d. Retro Audio Spectrum Visualizer (Removed per user request to provide clean video)
+                    /*
                     Box(modifier = Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.BottomStart) {
                         AudioSpectrumVisualizer(
                             isBuffering = isStreamBuffering,
@@ -246,6 +290,7 @@ class MainActivity : ComponentActivity() {
                             isPlaying = activeChannel != null
                         )
                     }
+                    */
 
                     // 2e. Technical Stats Overlay
                     TechnicalStatsOverlay(viewModel = viewModel)
@@ -253,56 +298,70 @@ class MainActivity : ComponentActivity() {
                     // 2f. Parental PIN Entry
                     PinEntryDialog(viewModel = viewModel)
 
-                    // 2g. CRT Power-On Effect
-                    CrtPowerOnEffect(viewModel = viewModel)
+                    // 2h. Country/Category Selection Overlay
+                    CountrySelectionOverlay(viewModel = viewModel)
 
-                    // 3. Vintage CRT Scanline and Screen bulge filters
-                    CrtScanlineOverlay()
+                    // 2g. CRT Power-On Effect (Removed per user request)
+                    // CrtPowerOnEffect(viewModel = viewModel)
+
+                    // 3. Vintage CRT Scanline and Screen bulge filters (Removed per user request)
+                    // CrtScanlineOverlay()
 
                     // 4. Custom Retro OSD Indicators
                     IptvOsdOverlay(viewModel = viewModel)
 
-                    // 4b. Tuning Static Transition Effect
-                    TuningStaticOverlay(isActive = isStaticActive)
+                    // 4b. Tuning Static Transition Effect (Removed per user request)
+                    // TuningStaticOverlay(isActive = isStaticActive)
 
-                    // 4c. Retro Search Keyboard
+                    // 4c. Modern Search Keyboard
                     if (isKeyboardVisible) {
-                        RetroKeyboard(
+                        SearchKeyboard(
                             viewModel = viewModel,
                             onClose = { viewModel.toggleKeyboard(false) }
                         )
                     }
 
-                    // 5. Gear icon (top gear Settings trigger)
-                    SettingsTriggerButton(
-                        onTrigger = { showSettings = true },
-                        visible = !showSettings && !showExitDialog && !showChannelGuide
-                    )
+                    // 5. Gear icon (top gear Settings trigger) - Hidden on TV
+                    if (!isTvDevice) {
+                        SettingsTriggerButton(
+                            onTrigger = { showSettings = true },
+                            visible = !showSettings && !showExitDialog && !showChannelGuide
+                        )
+                    }
 
-                    // 6. Sliding vintage Set-Top Box Settings menu
+                    // 5b. Mobile Navigation Buttons (Removed per user request, replaced by swipe gestures)
+
+                    // 6. Sliding modern Settings menu
                     AnimatedVisibility(
                         visible = showSettings,
                         enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
                         exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
                         modifier = Modifier.align(Alignment.CenterEnd)
                     ) {
-                        RetroSettingsMenu(
+                        SettingsMenu(
                             viewModel = viewModel,
-                            onClose = { showSettings = false }
+                            onClose = { 
+                                keyboardController?.hide()
+                                showSettings = false 
+                            }
                         )
                     }
 
-                    // 7. Channel list drawer (slides in from left)
+                    // 7. Sliding modern Channel List drawer
                     AnimatedVisibility(
                         visible = showChannelGuide,
                         enter = fadeIn() + slideInHorizontally(initialOffsetX = { -it }),
                         exit = fadeOut() + slideOutHorizontally(targetOffsetX = { -it }),
                         modifier = Modifier.align(Alignment.CenterStart)
                     ) {
-                        RetroChannelDrawer(
+                        ChannelGuideDrawer(
                             viewModel = viewModel,
-                            onClose = { showChannelGuide = false },
+                            onClose = { 
+                                keyboardController?.hide()
+                                showChannelGuide = false 
+                            },
                             onOpenSettings = {
+                                keyboardController?.hide()
                                 showChannelGuide = false
                                 showSettings = true
                             }
@@ -311,10 +370,10 @@ class MainActivity : ComponentActivity() {
 
                     // 8. Exit confirmation box
                     if (showExitDialog) {
-                        RetroExitDialog(
+                        ExitConfirmationDialog(
                             onConfirm = {
                                 showExitDialog = false
-                                crtState = CrtScreenState.COLLAPSING_Y
+                                finish()
                             },
                             onCancel = {
                                 showExitDialog = false
@@ -333,17 +392,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // 10. CRT Screen Off Effect overlay
-                    CrtScreenOffOverlay(
-                        state = crtState,
-                        onAnimationFinished = {
-                            crtState = when (crtState) {
-                                CrtScreenState.COLLAPSING_Y -> CrtScreenState.COLLAPSING_X
-                                CrtScreenState.COLLAPSING_X -> CrtScreenState.OFF
-                                else -> CrtScreenState.IDLE
-                            }
-                        }
-                    )
+                    // 10. Modern Screen Off Effect overlay
+                    // (Removed CRT collapse per user request)
                 }
             }
         }
@@ -412,6 +462,13 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_4, KeyEvent.KEYCODE_5, KeyEvent.KEYCODE_6, KeyEvent.KEYCODE_7,
             KeyEvent.KEYCODE_8, KeyEvent.KEYCODE_9 -> {
                 if (isLocked) return true
+                if (viewModel.isCountryMenuVisible.value) {
+                    val digit = keyCode - KeyEvent.KEYCODE_0
+                    if (digit in 1..3) {
+                        viewModel.selectCategoryByNumber(digit)
+                    }
+                    return true
+                }
                 if (!showSettings && !showExitDialog) {
                     val digit = keyCode - KeyEvent.KEYCODE_0
                     viewModel.pressNumericKey(digit)
@@ -430,6 +487,7 @@ class MainActivity : ComponentActivity() {
             }
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                 if (!showSettings && !showExitDialog && !showChannelGuide) {
+                    viewModel.showOsd()
                     event.startTracking()
                     return true
                 }
@@ -478,7 +536,7 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_PROG_BLUE -> {
-                viewModel.toggleAspectRatio()
+                viewModel.toggleCountryMenu()
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
@@ -501,8 +559,7 @@ class MainActivity : ComponentActivity() {
                     showExitDialog = false
                     return true
                 } else {
-                    // Recall feature mapped to Back when no menus are open
-                    viewModel.recallChannel()
+                    showExitDialog = true
                     return true
                 }
             }
@@ -517,7 +574,8 @@ class MainActivity : ComponentActivity() {
                     viewModel.commitNumpadInput()
                 } else if (showSettings || showExitDialog || showChannelGuide || viewModel.isGridViewVisible.value) {
                     // Menus handle their own focus/clicks
-                } else {
+                } else if (!isTvDevice) {
+                    // Only toggle controls via OK on mobile/touch, on TV it was confusing
                     showPlayerControls = !showPlayerControls
                 }
                 return true
@@ -551,6 +609,8 @@ fun AndroidVideoPlayer(
     val context = LocalContext.current
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
+    val playlist by viewModel.playbackPlaylist.collectAsState()
+    val playlistIndex by viewModel.playbackIndex.collectAsState()
 
     val resizeMode = when (aspectRatioMode) {
         "FIT" -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -558,21 +618,23 @@ fun AndroidVideoPlayer(
         else -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
     }
 
-    LaunchedEffect(url) {
+    // Initialize Player
+    LaunchedEffect(Unit) {
         if (playerInstance == null) {
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
-                    15000, // minBufferMs: total buffer to keep
+                    15000, // minBufferMs
                     50000, // maxBufferMs
-                    1000,  // bufferForPlaybackMs: wait for 1s of data before starting
+                    1000,  // bufferForPlaybackMs
                     2500   // bufferForPlaybackAfterRebufferMs
                 )
+                .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
 
             val dataSourceFactory = androidx.media3.datasource.DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                .setConnectTimeoutMs(30000) // Increased to 30s
-                .setReadTimeoutMs(30000)    // Increased to 30s
+                .setConnectTimeoutMs(20000)
+                .setReadTimeoutMs(20000)
                 .setAllowCrossProtocolRedirects(true)
             
             val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
@@ -588,15 +650,11 @@ fun AndroidVideoPlayer(
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)
                 .setHandleAudioBecomingNoisy(true)
-                .setWakeMode(androidx.media3.common.C.WAKE_MODE_NETWORK)
                 .build().apply {
                     playWhenReady = true
                     repeatMode = ExoPlayer.REPEAT_MODE_ONE
                     videoScalingMode = androidx.media3.common.C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                 }
-
-            var retryCount = 0
-            val maxRetries = 3
 
             player.addListener(object : androidx.media3.common.Player.Listener {
                 override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
@@ -612,36 +670,28 @@ fun AndroidVideoPlayer(
                     when (state) {
                         androidx.media3.common.Player.STATE_BUFFERING -> {
                             viewModel.setStreamBuffering(true)
-                            viewModel.setStreamError(false)
                         }
                         androidx.media3.common.Player.STATE_READY -> {
                             viewModel.setStreamBuffering(false)
                             viewModel.setStreamError(false)
-                            retryCount = 0
-                        }
-                        androidx.media3.common.Player.STATE_ENDED -> {
-                            viewModel.setStreamBuffering(false)
                         }
                     }
                 }
 
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                    android.util.Log.e("AndroidVideoPlayer", "ExoPlayer error: ${error.message}", error)
-                    if (retryCount < maxRetries) {
-                        retryCount++
-                        android.util.Log.d("AndroidVideoPlayer", "Retrying stream (Attempt $retryCount of $maxRetries)...")
-                        viewModel.setStreamError(true, "RECONNECTING... ($retryCount/$maxRetries)")
-                        player.prepare()
-                    } else {
-                        viewModel.setStreamBuffering(false)
-                        val cleanMsg = when (error.errorCode) {
-                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
-                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "CONNECTION TIMEOUT"
-                            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "BAD HTTP STATUS"
-                            androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> "UNSUPPORTED CODEC"
-                            else -> "SIGNAL INTERRUPTED"
+                    viewModel.setStreamBuffering(false)
+                    viewModel.setStreamError(true, "SIGNAL INTERRUPTED")
+                    viewModel.markCurrentChannelInactive()
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    // Sync ViewModel if player transitions internally (e.g. seekToNext)
+                    val newIndex = player.currentMediaItemIndex
+                    if (newIndex in playlist.indices) {
+                        val transitionedChannel = playlist[newIndex]
+                        if (transitionedChannel.id != viewModel.activeChannel.value?.id) {
+                            viewModel.setActiveChannel(transitionedChannel)
                         }
-                        viewModel.setStreamError(true, "$cleanMsg (${error.errorCodeName})")
                     }
                 }
             })
@@ -649,18 +699,33 @@ fun AndroidVideoPlayer(
             playerInstance = player
             onPlayerCreated(player)
         }
+    }
 
+    // Sync Playlist and Position
+    LaunchedEffect(playlist, playlistIndex) {
         playerInstance?.let { player ->
-            val mediaItem = androidx.media3.common.MediaItem.Builder()
-                .setUri(url)
-                .setMediaMetadata(
-                    androidx.media3.common.MediaMetadata.Builder()
-                        .setTitle(viewModel.activeChannel.value?.name ?: "UNKNOWN CHANNEL")
-                        .build()
-                )
-                .build()
-            player.setMediaItem(mediaItem)
-            player.prepare()
+            if (playlist.isEmpty() || playlistIndex == -1) return@LaunchedEffect
+
+            val currentMediaItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+            val incomingMediaItems = playlist.map { ch ->
+                MediaItem.Builder()
+                    .setUri(ch.url)
+                    .setMediaId(ch.id.toString())
+                    .setMediaMetadata(androidx.media3.common.MediaMetadata.Builder().setTitle(ch.name).build())
+                    .build()
+            }
+
+            // Check if playlist has changed significantly or we just need to seek
+            val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size && 
+                                incomingMediaItems.firstOrNull()?.mediaId == currentMediaItems.firstOrNull()?.mediaId
+
+            if (!isSamePlaylist) {
+                player.setMediaItems(incomingMediaItems)
+                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                player.prepare()
+            } else if (player.currentMediaItemIndex != playlistIndex) {
+                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+            }
         }
     }
 
@@ -682,6 +747,7 @@ fun AndroidVideoPlayer(
                 player = playerInstance
                 useController = false
                 this.resizeMode = resizeMode
+                this.keepScreenOn = true
             }
         },
         update = { view ->
@@ -713,16 +779,16 @@ fun PlaylistImportingOverlay(viewModel: IptvViewModel) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth(0.8f)
-                    .border(2.dp, Color(0xFF00FF00), RoundedCornerShape(8.dp))
-                    .background(Color(0xFF0A1A0A))
-                    .padding(24.dp),
+                    .border(1.dp, Color.Cyan, RoundedCornerShape(12.dp))
+                    .background(Color(0xFF121212), RoundedCornerShape(12.dp))
+                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     text = "FETCHING PLAYLIST DATA",
-                    color = Color(0xFF00FF00),
+                    color = Color.Cyan,
                     fontSize = 18.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
                 
@@ -732,40 +798,35 @@ fun PlaylistImportingOverlay(viewModel: IptvViewModel) {
                     text = "$importProgressPercent%",
                     color = Color.White,
                     fontSize = 32.sp,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.ExtraBold
                 )
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                val totalTicks = 20
-                val filledTicks = (importProgressPercent * totalTicks / 100).coerceIn(0, totalTicks)
-                val emptyTicks = totalTicks - filledTicks
-                val progressBarString = "[" + "█".repeat(filledTicks) + "░".repeat(emptyTicks) + "]"
-                
-                Text(
-                    text = progressBarString,
-                    color = Color(0xFF00FF00),
-                    fontSize = 16.sp,
-                    fontFamily = FontFamily.Monospace
+                androidx.compose.material3.LinearProgressIndicator(
+                    progress = { importProgressPercent / 100f },
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                    color = Color.Cyan,
+                    trackColor = Color.White.copy(alpha = 0.1f)
                 )
                 
                 Spacer(modifier = Modifier.height(16.dp))
                 
                 Text(
                     text = importStatus.uppercase(),
-                    color = Color.Yellow,
+                    color = Color.White.copy(alpha = 0.7f),
                     fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.SansSerif
                 )
                 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(8.dp))
                 
                 Text(
                     text = "CHANNELS FOUND: $importChannelCount",
-                    color = Color(0xFF00FF00),
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace,
+                    color = Color.Cyan,
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -781,43 +842,44 @@ fun AudioSpectrumVisualizer(
     modifier: Modifier = Modifier,
     isBuffering: Boolean,
     isError: Boolean,
-    isPlaying: Boolean // Can be inferred from not buffering and not erroring, plus active channel
+    isPlaying: Boolean
 ) {
     if (isBuffering || isError || !isPlaying) return
 
     val barCount = 12
-    val randoms = remember { List(barCount) { mutableStateOf(0f) } }
+    val randoms = remember { List(barCount) { Animatable(0.1f) } }
 
     LaunchedEffect(Unit) {
         while (true) {
             for (i in 0 until barCount) {
-                // Peak is at the middle, edges are lower
                 val base = 1f - kotlin.math.abs(i - barCount / 2f) / (barCount / 2f)
-                val noise = (0..40).random() / 100f // 0.0 to 0.4
-                randoms[i].value = (base * 0.4f + noise).coerceIn(0.1f, 1f)
+                val noise = (0..40).random() / 100f
+                val target = (base * 0.4f + noise).coerceIn(0.1f, 1f)
+                launch {
+                    randoms[i].animateTo(target, tween(80))
+                }
             }
-            delay(100) // Fast 10fps update for retro feel
+            delay(100)
         }
     }
 
-    Row(
+    val accentColor = Color.Cyan
+
+    Canvas(
         modifier = modifier
+            .width((barCount * 6).dp)
             .height(24.dp)
-            .padding(4.dp),
-        verticalAlignment = Alignment.Bottom,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
+            .padding(4.dp)
     ) {
+        val spacing = 2.dp.toPx()
+        val barWidth = (size.width - (barCount - 1) * spacing) / barCount
+        
         for (i in 0 until barCount) {
-            val barHeight by animateFloatAsState(
-                targetValue = randoms[i].value,
-                animationSpec = tween(durationMillis = 80),
-                label = "barHeight"
-            )
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .fillMaxHeight(barHeight)
-                    .background(Color(0xFF00FF00).copy(alpha = 0.8f))
+            val h = randoms[i].value * size.height
+            drawRect(
+                color = accentColor.copy(alpha = 0.8f),
+                topLeft = Offset(i * (barWidth + spacing), size.height - h),
+                size = Size(barWidth, h)
             )
         }
     }
@@ -845,25 +907,15 @@ fun IptvOsdOverlay(
     val isVolumeVisible by viewModel.volumeDisplayVisible.collectAsState()
     val numpadBuffer by viewModel.inputBufferText.collectAsState()
     val signalStrength by viewModel.signalStrength.collectAsState()
+    val osdVisible by viewModel.isOsdVisible.collectAsState()
     val sleepTimer by viewModel.sleepTimerMinutes.collectAsState()
-    val viewModelTime by viewModel.currentTime.collectAsState()
     val isLocked by viewModel.isQuickLocked.collectAsState()
     val fontIndex by viewModel.selectedFontIndex.collectAsState()
 
     val currentFont = when(fontIndex) {
         1 -> FontFamily.Serif
         2 -> FontFamily.SansSerif
-        else -> FontFamily.Monospace
-    }
-
-    var osdVisible by remember { mutableStateOf(false) }
-
-    LaunchedEffect(activeChannel) {
-        if (activeChannel != null) {
-            osdVisible = true
-            delay(4000) // Show for 4 seconds
-            osdVisible = false
-        }
+        else -> FontFamily.Default
     }
 
     Box(
@@ -871,52 +923,17 @@ fun IptvOsdOverlay(
             .fillMaxSize()
             .padding(4.vw())
     ) {
-        // Top-Right: Real-time Clock (7-segment style)
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .offset(y = if (activeChannel != null && !isTuning) 8.vh() else 0.dp) // Avoid overlapping signal bars
-                .background(Color.Black.copy(alpha = 0.7f))
-                .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.3f))
-                .padding(horizontal = 2.vw(), vertical = 0.5.vh())
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isLocked) {
-                    Text(
-                        text = "🔒",
-                        color = Color.Red,
-                        fontSize = 1.8.vh().value.sp,
-                        modifier = Modifier.padding(end = 1.vw())
-                    )
-                }
-                Text(
-                    text = viewModelTime,
-                    color = Color(0xFF00FF00),
-                    fontFamily = currentFont,
-                    fontSize = 2.5.vh().value.sp,
-                    fontWeight = FontWeight.Bold,
-                    style = androidx.compose.ui.text.TextStyle(
-                        shadow = androidx.compose.ui.graphics.Shadow(
-                            color = Color(0xFF00FF00),
-                            offset = androidx.compose.ui.geometry.Offset(0f, 0f),
-                            blurRadius = 8f
-                        )
-                    )
-                )
-            }
-        }
-
         // Top-Left: Sleep Timer
         if (sleepTimer != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(1.vw())
+                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 1.vw(), vertical = 0.5.vh())
             ) {
                 Text(
                     text = "SLEEP: $sleepTimer MIN",
-                    color = Color(0xFFFFB000), // Amber
+                    color = Color.Cyan,
                     fontFamily = currentFont,
                     fontSize = 1.8.vh().value.sp,
                     fontWeight = FontWeight.Bold
@@ -925,20 +942,20 @@ fun IptvOsdOverlay(
         }
 
         // Top-Right: Signal Strength Indicator
-        if (activeChannel != null && !isTuning) {
+        if (activeChannel != null && !isTuning && osdVisible) {
             Column(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .background(Color.Black.copy(alpha = 0.6f))
+                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(4.dp))
                     .padding(1.vw()),
                 horizontalAlignment = Alignment.End
             ) {
                 Text(
                     text = "SIGNAL",
-                    color = Color(0xFF00FF00),
+                    color = Color.White,
                     fontFamily = currentFont,
                     fontSize = 1.2.vh().value.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.SemiBold
                 )
                 Row(verticalAlignment = Alignment.Bottom) {
                     val bars = 5
@@ -950,64 +967,48 @@ fun IptvOsdOverlay(
                                 .width(0.8.vw())
                                 .height(barHeight)
                                 .padding(horizontal = 0.1.vw())
-                                .background(if (isActive) Color(0xFF00FF00) else Color.DarkGray)
+                                .background(if (isActive) Color.Cyan else Color.DarkGray)
                         )
                     }
                 }
                 Text(
                     text = "${(signalStrength * 100).toInt()}%",
-                    color = Color(0xFF00FF00),
+                    color = Color.White,
                     fontFamily = currentFont,
                     fontSize = 1.2.vh().value.sp
                 )
             }
         }
 
-        // Bottom-Right: Monospace Green Channel Info & Time (AV-1, CH xx)
+        // Bottom-Right: Modern Channel Info
         if (activeChannel != null && !isTuning && osdVisible) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .padding(1.vw()),
+                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                    .padding(1.5.vw()),
                 horizontalAlignment = Alignment.End
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = "AV-1",
-                        color = Color(0xFF00FF00),
-                        fontFamily = currentFont,
-                        fontSize = 2.2.vh().value.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(end = 1.vw())
-                    )
-                    Text(
-                        text = viewModelTime.take(5), // Show HH:mm only
-                        color = Color(0xFF00FF00),
-                        fontFamily = currentFont,
-                        fontSize = 2.2.vh().value.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
                 Text(
                     text = "CH ${String.format("%02d", activeChannel!!.channelNumber)}",
-                    color = Color(0xFF00FF00),
+                    color = Color.Cyan,
                     fontFamily = currentFont,
                     fontSize = 3.vh().value.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
                     text = activeChannel!!.name.uppercase(),
-                    color = Color(0xFF00FF00),
+                    color = Color.White,
                     fontFamily = currentFont,
-                    fontSize = 1.8.vh().value.sp,
+                    fontSize = 2.2.vh().value.sp,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 if (!activeChannel!!.groupTitle.isNullOrEmpty()) {
                     Text(
                         text = activeChannel!!.groupTitle!!.uppercase(),
-                        color = Color(0xFF00AA00), // Slightly darker green for description
+                        color = Color.LightGray,
                         fontFamily = currentFont,
                         fontSize = 1.5.vh().value.sp,
                         maxLines = 1,
@@ -1016,26 +1017,25 @@ fun IptvOsdOverlay(
                     )
                 }
                 
-                Spacer(modifier = Modifier.height(0.8.vh()))
+                Spacer(modifier = Modifier.height(1.vh()))
                 
                 // EPG "Now Playing" block
                 Column(
                     modifier = Modifier
-                        .background(Color(0xFF0A1F0A).copy(alpha = 0.8f))
-                        .border(1.dp, Color(0xFF00FF00).copy(alpha = 0.5f))
+                        .background(Color(0xFF121212).copy(alpha = 0.9f), RoundedCornerShape(4.dp))
                         .padding(0.8.vw()),
                     horizontalAlignment = Alignment.End
                 ) {
                     Text(
                         text = "NOW PLAYING",
-                        color = Color(0xFFFFB000), // Amber for EPG header
+                        color = Color.Cyan,
                         fontFamily = currentFont,
                         fontSize = 1.2.vh().value.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.SemiBold
                     )
                     Text(
                         text = "NO EPG DATA AVAILABLE", // Placeholder for XMLTV fetcher
-                        color = Color(0xFF00FF00),
+                        color = Color.Cyan,
                         fontFamily = currentFont,
                         fontSize = 1.5.vh().value.sp,
                         maxLines = 1,
@@ -1050,17 +1050,26 @@ fun IptvOsdOverlay(
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.85f))
-                    .border(2.dp, Color(0xFF00FF00), RoundedCornerShape(0.4.vw()))
-                    .padding(3.vw())
+                    .background(Color.Black.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
+                    .border(1.dp, Color.Cyan, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 48.dp, vertical = 32.dp)
             ) {
-                Text(
-                    text = "TUNING CH: $numpadBuffer-",
-                    color = Color(0xFF00FF00),
-                    fontFamily = currentFont,
-                    fontSize = 4.vh().value.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "GO TO CHANNEL",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontFamily = currentFont,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = numpadBuffer,
+                        color = Color.Cyan,
+                        fontFamily = currentFont,
+                        fontSize = 5.vh().value.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
             }
         }
 
@@ -1069,25 +1078,25 @@ fun IptvOsdOverlay(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .background(Color.Black.copy(alpha = 0.75f))
-                    .border(1.dp, Color(0xFF00FF00))
-                    .padding(1.5.vw())
+                    .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                    .padding(16.dp)
             ) {
                 Text(
-                    text = "VOLUME: $volumeLevel/10",
-                    color = Color(0xFF00FF00),
+                    text = "VOLUME: $volumeLevel",
+                    color = Color.White,
                     fontFamily = currentFont,
                     fontSize = 1.8.vh().value.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 0.5.vh())
+                    modifier = Modifier.padding(bottom = 8.dp)
                 )
-                Row {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     for (i in 1..10) {
-                        Text(
-                            text = if (i <= volumeLevel) "▰" else "▱",
-                            color = Color(0xFF00FF00),
-                            fontSize = 2.2.vh().value.sp,
-                            fontFamily = currentFont
+                        Box(
+                            modifier = Modifier
+                                .size(width = 12.dp, height = 24.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (i <= volumeLevel) Color.Cyan else Color.White.copy(alpha = 0.1f))
                         )
                     }
                 }
@@ -1100,40 +1109,40 @@ fun IptvOsdOverlay(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth(0.8f)
-                    .background(Color.Black.copy(alpha = 0.85f))
-                    .border(2.dp, Color(0xFFFFFF00), RoundedCornerShape(1.vw()))
-                    .padding(2.vw()),
+                    .background(Color.Black.copy(alpha = 0.95f), RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.Cyan.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
+                    .padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
                     text = tuningStatus,
-                    color = Color(0xFF00FF00),
+                    color = Color.Cyan,
                     fontFamily = currentFont,
                     fontSize = 2.vh().value.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.ExtraBold,
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(1.5.vh()))
+                Spacer(modifier = Modifier.height(24.dp))
 
-                // Frequency pointer track (45.25 MHz to 800 MHz)
+                // Frequency pointer track
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(2.5.vh())
-                        .background(Color(0xFF112211))
-                        .border(1.dp, Color(0xFF00FF00))
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color.White.copy(alpha = 0.05f))
                 ) {
                     val scalePercent = (tuningFreq - 45.25f) / (800.00f - 45.25f)
                     Box(
                         modifier = Modifier
                             .fillMaxHeight()
                             .fillMaxWidth(scalePercent.coerceIn(0f, 1f))
-                            .background(Color(0xFFFFB000)) // Amber needle
+                            .background(Color.Cyan)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(0.8.vh()))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1149,19 +1158,19 @@ fun IptvOsdOverlay(
 }
 
 @Composable
-fun Modifier.retroFocusEffect(
+fun Modifier.modernFocusEffect(
     isFocused: Boolean,
-    focusedColor: Color = Color.Red,
+    focusedColor: Color = Color.Cyan,
     unfocusedColor: Color = Color.Transparent,
-    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(4.dp)
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(8.dp)
 ): Modifier = this
     .border(
-        width = if (isFocused) 2.dp else 1.dp,
-        color = if (isFocused) focusedColor else unfocusedColor,
+        width = if (isFocused) 2.dp else 0.dp,
+        color = if (isFocused) focusedColor else Color.Transparent,
         shape = shape
     )
     .background(
-        color = if (isFocused) focusedColor.copy(alpha = 0.2f) else Color.Transparent,
+        color = if (isFocused) focusedColor.copy(alpha = 0.15f) else Color.Transparent,
         shape = shape
     )
 
@@ -1196,7 +1205,7 @@ fun SettingsTriggerButton(
                 .focusRequester(focusRequester)
                 .onFocusChanged { isFocused = it.isFocused }
                 .focusable()
-                .retroFocusEffect(isFocused, focusedColor = Color.Red, shape = CircleShape)
+                .modernFocusEffect(isFocused, focusedColor = Color.Red, shape = CircleShape)
                 .size(48.dp)
                 .testTag("settings_gear_button")
         ) {
@@ -1213,7 +1222,7 @@ fun SettingsTriggerButton(
  * Slide-out Retro STB Playlist Configuration Settings Panel.
  */
 @Composable
-fun RetroSettingsMenu(
+fun SettingsMenu(
     viewModel: IptvViewModel,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
@@ -1243,10 +1252,10 @@ fun RetroSettingsMenu(
         }
     }
 
-    // Custom monospace/pixel theme colors
-    val bgColor = Color(0xFF0C120C)
-    val phosphorGreen = Color(0xFF00FF00)
-    val amber = Color(0xFFFFB000)
+    // Custom modern theme colors
+    val bgColor = Color(0xFF121212)
+    val accentColor = Color.Cyan
+    val secondaryColor = Color.White
 
     // Hide keyboard and clear focus when this screen is dismissed/disposed
     DisposableEffect(Unit) {
@@ -1276,28 +1285,28 @@ fun RetroSettingsMenu(
             .fillMaxHeight()
             .width(420.dp)
             .background(bgColor)
-            .border(2.dp, phosphorGreen)
+            .border(2.dp, accentColor)
             .padding(24.dp)
     ) {
         val scrollState = rememberScrollState()
         Column(modifier = Modifier.fillMaxSize().verticalScroll(scrollState)) {
             // Header
             Text(
-                text = "SYSTEM CONFIGURATION",
-                color = phosphorGreen,
+                text = "SYSTEM SETTINGS",
+                color = accentColor,
                 fontSize = 20.sp,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 16.dp)
+                modifier = Modifier.padding(bottom = 20.dp)
             )
 
             // Input Fields Row
             Text(
-                text = "ADD NEW M3U PLAYLIST URL:",
-                color = amber,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
+                text = "IMPORT PLAYLIST URL",
+                color = secondaryColor,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold
             )
 
             Spacer(modifier = Modifier.height(6.dp))
@@ -1306,15 +1315,15 @@ fun RetroSettingsMenu(
                 value = playlistName,
                 onValueChange = { playlistName = it },
                 enabled = !isImporting,
-                label = { Text("PLAYLIST LABEL", color = phosphorGreen, fontFamily = FontFamily.Monospace) },
+                label = { Text("PLAYLIST LABEL", color = accentColor, fontFamily = FontFamily.SansSerif) },
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = phosphorGreen,
-                    unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
-                    focusedLabelColor = phosphorGreen,
+                    focusedBorderColor = accentColor,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                    focusedLabelColor = accentColor,
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    disabledBorderColor = phosphorGreen.copy(alpha = 0.2f),
-                    disabledLabelColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledBorderColor = Color.White.copy(alpha = 0.1f),
+                    disabledLabelColor = Color.White.copy(alpha = 0.1f),
                     disabledTextColor = Color.Gray
                 ),
                 modifier = Modifier
@@ -1330,15 +1339,15 @@ fun RetroSettingsMenu(
                 value = playlistUrl,
                 onValueChange = { playlistUrl = it },
                 enabled = !isImporting,
-                label = { Text("M3U URL", color = phosphorGreen, fontFamily = FontFamily.Monospace) },
+                label = { Text("M3U PLAYLIST URL", color = accentColor, fontFamily = FontFamily.SansSerif) },
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = phosphorGreen,
-                    unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
-                    focusedLabelColor = phosphorGreen,
+                    focusedBorderColor = accentColor,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                    focusedLabelColor = accentColor,
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.White,
-                    disabledBorderColor = phosphorGreen.copy(alpha = 0.2f),
-                    disabledLabelColor = phosphorGreen.copy(alpha = 0.2f),
+                    disabledBorderColor = Color.White.copy(alpha = 0.1f),
+                    disabledLabelColor = Color.White.copy(alpha = 0.1f),
                     disabledTextColor = Color.Gray
                 ),
                 modifier = Modifier.fillMaxWidth(),
@@ -1362,11 +1371,11 @@ fun RetroSettingsMenu(
 
             // Quick ADD Sources
             Text(
-                text = "QUICK ADD SOURCES (AUTO-UPDATE):",
-                color = amber,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
+                text = "QUICK ADD SOURCES",
+                color = secondaryColor,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1376,11 +1385,11 @@ fun RetroSettingsMenu(
                         playlistName = "BD CHANNELS"
                         playlistUrl = "https://iptv-org.github.io/iptv/countries/bd.m3u"
                     },
-                    modifier = Modifier.weight(1f).onFocusChanged { isBdFocused = it.isFocused }.retroFocusEffect(isBdFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isBdFocused) Color.White else phosphorGreen),
-                    border = BorderStroke(1.dp, if (isBdFocused) Color.Red else phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isBdFocused = it.isFocused }.modernFocusEffect(isBdFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isBdFocused) Color.White else accentColor),
+                    border = BorderStroke(1.dp, if (isBdFocused) Color.Cyan else accentColor)
                 ) {
-                    Text("BD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Text("BD IPTV", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
                 }
                 var isWorldFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
@@ -1388,11 +1397,11 @@ fun RetroSettingsMenu(
                         playlistName = "WORLD CHANNELS"
                         playlistUrl = "https://iptv-org.github.io/iptv/index.m3u"
                     },
-                    modifier = Modifier.weight(1f).onFocusChanged { isWorldFocused = it.isFocused }.retroFocusEffect(isWorldFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isWorldFocused) Color.White else phosphorGreen),
-                    border = BorderStroke(1.dp, if (isWorldFocused) Color.Red else phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isWorldFocused = it.isFocused }.modernFocusEffect(isWorldFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isWorldFocused) Color.White else accentColor),
+                    border = BorderStroke(1.dp, if (isWorldFocused) Color.Cyan else accentColor)
                 ) {
-                    Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
                 }
             }
 
@@ -1400,37 +1409,37 @@ fun RetroSettingsMenu(
 
             // INTERFACE SETTINGS
             Text(
-                text = "INTERFACE CUSTOMIZATION:",
-                color = amber,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
+                text = "INTERFACE CUSTOMIZATION",
+                color = secondaryColor,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold
             )
             Spacer(modifier = Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 var isFontFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = { viewModel.cycleFont() },
-                    modifier = Modifier.weight(1f).onFocusChanged { isFontFocused = it.isFocused }.retroFocusEffect(isFontFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isFontFocused) Color.White else phosphorGreen),
-                    border = BorderStroke(1.dp, if (isFontFocused) Color.Red else phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isFontFocused = it.isFocused }.modernFocusEffect(isFontFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isFontFocused) Color.White else accentColor),
+                    border = BorderStroke(1.dp, if (isFontFocused) Color.Cyan else accentColor)
                 ) {
                     val fontIndex by viewModel.selectedFontIndex.collectAsState()
                     val fontName = when(fontIndex) {
                         1 -> "SERIF"
                         2 -> "SANS"
-                        else -> "MONO"
+                        else -> "SYSTEM"
                     }
-                    Text("FONT: $fontName", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Text("FONT: $fontName", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
                 }
                 var isLockFocused by remember { mutableStateOf(false) }
                 OutlinedButton(
                     onClick = { viewModel.toggleQuickLock() },
-                    modifier = Modifier.weight(1f).onFocusChanged { isLockFocused = it.isFocused }.retroFocusEffect(isLockFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isLockFocused) Color.White else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen),
-                    border = BorderStroke(1.dp, if (isLockFocused) Color.Red else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else phosphorGreen)
+                    modifier = Modifier.weight(1f).onFocusChanged { isLockFocused = it.isFocused }.modernFocusEffect(isLockFocused),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isLockFocused) Color.White else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else accentColor),
+                    border = BorderStroke(1.dp, if (isLockFocused) Color.Cyan else if (viewModel.isQuickLocked.collectAsState().value) Color.Red else accentColor)
                 ) {
-                    Text(if (viewModel.isQuickLocked.collectAsState().value) "UNLOCK NAV" else "LOCK NAV", fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Text(if (viewModel.isQuickLocked.collectAsState().value) "UNLOCK UI" else "LOCK UI", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
                 }
             }
 
@@ -1441,8 +1450,8 @@ fun RetroSettingsMenu(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, amber, RoundedCornerShape(4.dp))
-                        .background(Color(0xFF161002))
+                        .border(1.dp, secondaryColor, RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.5f))
                         .padding(12.dp)
                 ) {
                     Row(
@@ -1451,17 +1460,17 @@ fun RetroSettingsMenu(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "⚡ LOADING PLAYLIST...",
-                            color = amber,
+                            text = "IMPORTING DATA...",
+                            color = secondaryColor,
                             fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
                             text = "$importProgressPercent%",
-                            color = amber,
+                            color = accentColor,
                             fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -1469,34 +1478,27 @@ fun RetroSettingsMenu(
                     Spacer(modifier = Modifier.height(6.dp))
 
                     // Retro-character progress bar [████░░░░░░]
-                    val totalTicks = 20
-                    val filledTicks = (importProgressPercent * totalTicks / 100).coerceIn(0, totalTicks)
-                    val emptyTicks = totalTicks - filledTicks
-                    val progressBarString = "[" + "█".repeat(filledTicks) + "░".repeat(emptyTicks) + "]"
-
-                    Text(
-                        text = progressBarString,
-                        color = amber,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { importProgressPercent / 100f },
+                        modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                        color = accentColor,
+                        trackColor = Color.White.copy(alpha = 0.1f)
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
                         text = "STATUS: ${importStatus.uppercase()}",
                         color = Color.White,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.SansSerif
                     )
 
-                    Spacer(modifier = Modifier.height(2.dp))
-
                     Text(
-                        text = "CHANNELS FETCHED: $importChannelCount",
-                        color = phosphorGreen,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
+                        text = "CHANNELS: $importChannelCount",
+                        color = accentColor,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.SansSerif,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1516,19 +1518,19 @@ fun RetroSettingsMenu(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isLoadButtonFocused) Color.Red else Color.Transparent
+                            containerColor = if (isLoadButtonFocused) accentColor else Color.Transparent
                         ),
                         modifier = Modifier
                             .weight(1f)
                             .onFocusChanged { isLoadButtonFocused = it.isFocused }
-                            .retroFocusEffect(isLoadButtonFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen)
-                            .clip(RoundedCornerShape(4.dp)),
-                        shape = RoundedCornerShape(4.dp)
+                            .modernFocusEffect(isLoadButtonFocused, focusedColor = accentColor, unfocusedColor = Color.White.copy(alpha = 0.2f))
+                            .clip(RoundedCornerShape(8.dp)),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
                             text = "IMPORT URL",
-                            color = if (isLoadButtonFocused) Color.White else phosphorGreen,
-                            fontFamily = FontFamily.Monospace,
+                            color = if (isLoadButtonFocused) Color.Black else accentColor,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
                         )
@@ -1537,19 +1539,19 @@ fun RetroSettingsMenu(
                     Button(
                         onClick = { filePickerLauncher.launch("*/*") },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isFileButtonFocused) Color.Red else Color.Transparent
+                            containerColor = if (isFileButtonFocused) accentColor else Color.Transparent
                         ),
                         modifier = Modifier
                             .weight(1f)
                             .onFocusChanged { isFileButtonFocused = it.isFocused }
-                            .retroFocusEffect(isFileButtonFocused, focusedColor = Color.Red, unfocusedColor = amber)
-                            .clip(RoundedCornerShape(4.dp)),
-                        shape = RoundedCornerShape(4.dp)
+                            .modernFocusEffect(isFileButtonFocused, focusedColor = accentColor, unfocusedColor = Color.White.copy(alpha = 0.2f))
+                            .clip(RoundedCornerShape(8.dp)),
+                        shape = RoundedCornerShape(8.dp)
                     ) {
                         Text(
-                            text = "LOCAL M3U",
-                            color = if (isFileButtonFocused) Color.White else amber,
-                            fontFamily = FontFamily.Monospace,
+                            text = "LOCAL FILE",
+                            color = if (isFileButtonFocused) Color.Black else secondaryColor,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
                         )
@@ -1560,10 +1562,10 @@ fun RetroSettingsMenu(
             Spacer(modifier = Modifier.height(18.dp))
 
             Text(
-                text = "ACTIVE SOURCES:",
-                color = amber,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace,
+                text = "ACTIVE SOURCES",
+                color = secondaryColor,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Bold
             )
 
@@ -1588,7 +1590,7 @@ fun RetroSettingsMenu(
                             modifier = Modifier
                                 .weight(1f)
                                 .onFocusChanged { isCardFocused = it.isFocused }
-                                .retroFocusEffect(isCardFocused, focusedColor = Color.Red)
+                                .modernFocusEffect(isCardFocused, focusedColor = Color.Red)
                                 .clickable {
                                     viewModel.selectPlaylist(playlist)
                                     onClose()
@@ -1599,9 +1601,9 @@ fun RetroSettingsMenu(
                             Column {
                                 Text(
                                     text = playlist.name.uppercase(),
-                                    color = if (isCardFocused) Color.White else phosphorGreen,
+                                    color = if (isCardFocused) Color.White else accentColor,
                                     fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = FontFamily.SansSerif,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
@@ -1609,7 +1611,7 @@ fun RetroSettingsMenu(
                                     text = playlist.url,
                                     color = if (isCardFocused) Color.LightGray else Color.Gray,
                                     fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = FontFamily.SansSerif,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -1624,7 +1626,7 @@ fun RetroSettingsMenu(
                             modifier = Modifier
                                 .size(40.dp)
                                 .onFocusChanged { isDeleteFocused = it.isFocused }
-                                .retroFocusEffect(isDeleteFocused, focusedColor = Color.Red)
+                                .modernFocusEffect(isDeleteFocused, focusedColor = Color.Red)
                                 .focusable()
                                 .testTag("delete_playlist_${playlist.id}")
                         ) {
@@ -1646,18 +1648,18 @@ fun RetroSettingsMenu(
             Button(
                 onClick = { viewModel.runAnalogAutoTuning(isFirstLaunch = false) },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isTuneBtnFocused) phosphorGreen else Color.Transparent
+                    containerColor = if (isTuneBtnFocused) accentColor else Color.Transparent
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { isTuneBtnFocused = it.isFocused }
-                    .border(1.dp, phosphorGreen),
-                shape = RoundedCornerShape(4.dp)
+                    .border(1.dp, accentColor, RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = "RUN ANALOG AUTO-TUNING",
-                    color = if (isTuneBtnFocused) Color.Black else phosphorGreen,
-                    fontFamily = FontFamily.Monospace,
+                    text = "AUTO SCAN CHANNELS",
+                    color = if (isTuneBtnFocused) Color.Black else accentColor,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1670,18 +1672,19 @@ fun RetroSettingsMenu(
             Button(
                 onClick = { viewModel.toggleAspectRatio() },
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAspectBtnFocused) Color.Red else Color.Transparent
+                    containerColor = if (isAspectBtnFocused) accentColor else Color.Transparent
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { isAspectBtnFocused = it.isFocused }
-                    .retroFocusEffect(isAspectBtnFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen),
-                shape = RoundedCornerShape(4.dp)
+                    .modernFocusEffect(isAspectBtnFocused, focusedColor = accentColor, unfocusedColor = Color.White.copy(alpha = 0.2f))
+                    .clip(RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = "CRT ASPECT RATIO: $aspectRatioMode",
-                    color = if (isAspectBtnFocused) Color.White else phosphorGreen,
-                    fontFamily = FontFamily.Monospace,
+                    text = "SCREEN ASPECT RATIO: $aspectRatioMode",
+                    color = if (isAspectBtnFocused) Color.Black else secondaryColor,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1693,18 +1696,19 @@ fun RetroSettingsMenu(
             Button(
                 onClick = onClose,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isCloseBtnFocused) Color.Red else Color.Transparent
+                    containerColor = if (isCloseBtnFocused) accentColor else Color.Transparent
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .onFocusChanged { isCloseBtnFocused = it.isFocused }
-                    .retroFocusEffect(isCloseBtnFocused, focusedColor = Color.Red, unfocusedColor = amber),
-                shape = RoundedCornerShape(4.dp)
+                    .modernFocusEffect(isCloseBtnFocused, focusedColor = accentColor, unfocusedColor = Color.White.copy(alpha = 0.2f))
+                    .clip(RoundedCornerShape(8.dp)),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Text(
-                    text = "CLOSE CONFIGURATION",
-                    color = if (isCloseBtnFocused) Color.White else amber,
-                    fontFamily = FontFamily.Monospace,
+                    text = "CLOSE SETTINGS",
+                    color = if (isCloseBtnFocused) Color.Black else secondaryColor,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1720,7 +1724,7 @@ fun RetroSettingsMenu(
  * Slide-out Retro STB Channel Drawer (Slides from the left).
  */
 @Composable
-fun RetroChannelDrawer(
+fun ChannelGuideDrawer(
     viewModel: IptvViewModel,
     onClose: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -1749,16 +1753,15 @@ fun RetroChannelDrawer(
         listOf(null) + channels.mapNotNull { it.groupTitle }.distinct().sorted()
     }
 
-    val bgColor = Color(0xFF0C120C)
-    val phosphorGreen = Color(0xFF00FF00)
-    val amber = Color(0xFFFFB000)
-
+    val accentColor = Color.Cyan
+    val secondaryColor = Color.White
+    
     Box(
         modifier = modifier
             .fillMaxHeight()
-            .width(420.dp) // Slightly wider to accommodate logo
-            .background(bgColor)
-            .border(2.dp, phosphorGreen)
+            .width(400.dp)
+            .background(Color(0xFF121212))
+            .border(1.dp, Color.White.copy(alpha = 0.1f))
             .padding(24.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -1768,10 +1771,10 @@ fun RetroChannelDrawer(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "STB CHANNEL LIST",
-                    color = phosphorGreen,
+                    text = "CHANNEL LIST",
+                    color = Color.White,
                     fontSize = 20.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
                 
@@ -1779,7 +1782,7 @@ fun RetroChannelDrawer(
                     Icon(
                         imageVector = if (showOnlyFavorites) Icons.Default.Star else Icons.Outlined.Star,
                         contentDescription = "Toggle Favorites Filter",
-                        tint = if (showOnlyFavorites) amber else Color.Gray
+                        tint = if (showOnlyFavorites) accentColor else Color.Gray
                     )
                 }
             }
@@ -1795,9 +1798,9 @@ fun RetroChannelDrawer(
                     
                     Box(
                         modifier = Modifier
-                            .background(if (isSelected) phosphorGreen else if (isCatFocused) Color.Red.copy(alpha = 0.2f) else Color.Transparent)
+                            .background(if (isSelected) accentColor else if (isCatFocused) Color.Cyan.copy(alpha = 0.2f) else Color.Transparent)
                             .onFocusChanged { isCatFocused = it.isFocused }
-                            .retroFocusEffect(isCatFocused, focusedColor = Color.Red, unfocusedColor = phosphorGreen)
+                            .modernFocusEffect(isCatFocused, focusedColor = Color.Cyan, unfocusedColor = accentColor)
                             .clickable { viewModel.setCategory(category) }
                             .focusable()
                             .padding(horizontal = 8.dp, vertical = 4.dp),
@@ -1805,9 +1808,9 @@ fun RetroChannelDrawer(
                     ) {
                         Text(
                             text = category?.uppercase() ?: "ALL",
-                            color = if (isSelected) Color.Black else if (isCatFocused) Color.White else phosphorGreen,
+                            color = if (isSelected) Color.Black else if (isCatFocused) Color.White else accentColor,
                             fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -1817,16 +1820,17 @@ fun RetroChannelDrawer(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                label = { Text("FILTER", color = phosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 10.sp) },
+                label = { Text("FILTER CHANNELS", color = accentColor, fontFamily = FontFamily.SansSerif, fontSize = 10.sp) },
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = phosphorGreen,
-                    unfocusedBorderColor = phosphorGreen.copy(alpha = 0.5f),
+                    focusedBorderColor = accentColor,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color.LightGray,
-                    cursorColor = phosphorGreen
+                    cursorColor = accentColor
                 ),
-                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
+                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.SansSerif),
                 singleLine = true,
+                shape = RoundedCornerShape(8.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
@@ -1846,9 +1850,10 @@ fun RetroChannelDrawer(
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                             .onFocusChanged { isFocused = it.isFocused }
-                            .retroFocusEffect(isFocused, focusedColor = Color.Red, unfocusedColor = if (isPlaying) phosphorGreen else Color.Transparent)
+                            .modernFocusEffect(isFocused, focusedColor = Color.Cyan, unfocusedColor = if (isPlaying) accentColor else Color.Transparent)
                             .background(
-                                if (isPlaying) Color(0xFF061106) else Color.Transparent
+                                if (isPlaying) Color.Cyan.copy(alpha = 0.1f) else Color.Transparent,
+                                RoundedCornerShape(8.dp)
                             )
                             .onKeyEvent { event ->
                                 if (event.type == KeyEventType.KeyDown) {
@@ -1878,9 +1883,9 @@ fun RetroChannelDrawer(
                     ) {
                         Text(
                             text = String.format("%02d", channel.channelNumber),
-                            color = if (isFocused || isPlaying) phosphorGreen else Color.Gray,
+                            color = if (isFocused || isPlaying) accentColor else Color.Gray,
                             fontSize = 16.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.SansSerif,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.width(36.dp)
                         )
@@ -1910,16 +1915,16 @@ fun RetroChannelDrawer(
                                     text = "TV",
                                     color = Color.LightGray,
                                     fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace
+                                    fontFamily = FontFamily.SansSerif
                                 )
                             }
                         }
 
                         Text(
                             text = channel.name.uppercase(),
-                            color = if (isFocused) Color.White else if (isPlaying) phosphorGreen else Color.LightGray,
+                            color = if (isFocused) Color.White else if (isPlaying) accentColor else Color.LightGray,
                             fontSize = 14.sp,
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = FontFamily.SansSerif,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
@@ -1929,7 +1934,7 @@ fun RetroChannelDrawer(
                             Icon(
                                 imageVector = Icons.Default.Star,
                                 contentDescription = "Favorite",
-                                tint = amber,
+                                tint = secondaryColor,
                                 modifier = Modifier
                                     .size(16.dp)
                                     .padding(end = 4.dp)
@@ -1951,7 +1956,7 @@ fun RetroChannelDrawer(
                             Icon(
                                 imageVector = Icons.Default.PlayArrow,
                                 contentDescription = "Active channel indicator",
-                                tint = phosphorGreen,
+                                tint = accentColor,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -1971,18 +1976,18 @@ fun RetroChannelDrawer(
                 Button(
                     onClick = onOpenSettings,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isSettingsFocused) phosphorGreen else Color.Transparent
+                        containerColor = if (isSettingsFocused) accentColor else Color.Transparent
                     ),
                     modifier = Modifier
                         .weight(1f)
                         .onFocusChanged { isSettingsFocused = it.isFocused }
-                        .border(1.dp, phosphorGreen),
-                    shape = RoundedCornerShape(4.dp)
+                        .border(1.dp, accentColor, RoundedCornerShape(8.dp)),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
                         text = "SETTINGS",
-                        color = if (isSettingsFocused) Color.Black else phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
+                        color = if (isSettingsFocused) Color.Black else accentColor,
+                        fontFamily = FontFamily.SansSerif,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -1992,18 +1997,18 @@ fun RetroChannelDrawer(
                 Button(
                     onClick = onClose,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isCloseFocused) phosphorGreen else Color.Transparent
+                        containerColor = if (isCloseFocused) accentColor else Color.Transparent
                     ),
                     modifier = Modifier
                         .weight(1f)
                         .onFocusChanged { isCloseFocused = it.isFocused }
-                        .border(1.dp, phosphorGreen),
-                    shape = RoundedCornerShape(4.dp)
+                        .border(1.dp, accentColor, RoundedCornerShape(8.dp)),
+                    shape = RoundedCornerShape(8.dp)
                 ) {
                     Text(
                         text = "DISMISS",
-                        color = if (isCloseFocused) Color.Black else phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
+                        color = if (isCloseFocused) Color.Black else accentColor,
+                        fontFamily = FontFamily.SansSerif,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -2020,44 +2025,44 @@ fun RetroChannelDrawer(
  * Vintage 90s Exit confirmation dialog overlay.
  */
 @Composable
-fun RetroExitDialog(
+fun ExitConfirmationDialog(
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val phosphorGreen = Color(0xFF00FF00)
-    val deepGreen = Color(0xFF0A140A)
+    val accentColor = Color.Cyan
+    val bgColor = Color(0xFF121212)
     val focusRequester = remember { FocusRequester() }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.82f)),
+            .background(Color.Black.copy(alpha = 0.85f)),
         contentAlignment = Alignment.Center
     ) {
         Column(
             modifier = Modifier
                 .width(320.dp)
-                .background(deepGreen)
-                .border(2.dp, phosphorGreen, RoundedCornerShape(8.dp))
+                .background(bgColor, RoundedCornerShape(12.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "WARNING",
-                color = Color.Red,
-                fontFamily = FontFamily.Monospace,
+                text = "EXIT APPLICATION",
+                color = Color.White,
+                fontFamily = FontFamily.SansSerif,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
             Text(
-                text = "EXIT SR IPTV?",
-                color = phosphorGreen,
-                fontFamily = FontFamily.Monospace,
+                text = "DO YOU WANT TO EXIT?",
+                color = Color.White,
+                fontFamily = FontFamily.SansSerif,
                 fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.Normal,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
@@ -2070,18 +2075,18 @@ fun RetroExitDialog(
                 Button(
                     onClick = onConfirm,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isYesFocused) phosphorGreen else Color.Transparent
+                        containerColor = if (isYesFocused) accentColor else Color.Transparent
                     ),
                     modifier = Modifier
                         .focusRequester(focusRequester)
                         .onFocusChanged { isYesFocused = it.isFocused }
-                        .border(1.dp, phosphorGreen),
+                        .border(1.dp, if (isYesFocused) accentColor else Color.White.copy(alpha = 0.2f)),
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Text(
                         text = "YES",
-                        color = if (isYesFocused) Color.Black else phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
+                        color = if (isYesFocused) Color.Black else Color.White,
+                        fontFamily = FontFamily.SansSerif,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -2090,17 +2095,17 @@ fun RetroExitDialog(
                 Button(
                     onClick = onCancel,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isNoFocused) phosphorGreen else Color.Transparent
+                        containerColor = if (isNoFocused) accentColor else Color.Transparent
                     ),
                     modifier = Modifier
                         .onFocusChanged { isNoFocused = it.isFocused }
-                        .border(1.dp, phosphorGreen),
+                        .border(1.dp, if (isNoFocused) accentColor else Color.White.copy(alpha = 0.2f)),
                     shape = RoundedCornerShape(4.dp)
                 ) {
                     Text(
                         text = "NO",
-                        color = if (isNoFocused) Color.Black else phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
+                        color = if (isNoFocused) Color.Black else Color.White,
+                        fontFamily = FontFamily.SansSerif,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -2121,38 +2126,59 @@ fun EmptyTVState(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF050F05)),
+            .background(Color.Black),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = "AV-1",
-                color = Color(0xFF00FF00),
-                fontFamily = FontFamily.Monospace,
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.fillMaxWidth(0.8f)
+        ) {
+            AsyncImage(
+                model = R.drawable.ic_hero_banner,
+                contentDescription = "Hero Banner",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(16.dp)),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop
             )
-            Spacer(modifier = Modifier.height(12.dp))
+            
+            Spacer(modifier = Modifier.height(32.dp))
+            
             Text(
-                text = "NO SIGNAL - PLEASE ADD PLAYLIST IN CONFIGURATION",
-                color = Color(0xFF00FF00),
-                fontFamily = FontFamily.Monospace,
+                text = "NO CHANNELS LOADED",
+                color = Color.White,
+                fontSize = 24.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.ExtraBold
+            )
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Text(
+                text = "PLEASE CONFIGURE YOUR PLAYLIST SOURCE",
+                color = Color.Cyan,
                 fontSize = 14.sp,
-                textAlign = TextAlign.Center
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.alpha(0.7f)
             )
         }
     }
 }
 
 @Composable
-fun RetroGridView(
+fun ChannelGridView(
     viewModel: IptvViewModel,
     onClose: () -> Unit
 ) {
     val channels by viewModel.channels.collectAsState()
     val activeChannel by viewModel.activeChannel.collectAsState()
-    val phosphorGreen = Color(0xFF00FF00)
-    val bgColor = Color(0xFF0C120C)
+    val accentColor = Color.Cyan
+    val bgColor = Color(0xFF121212)
 
     Box(
         modifier = Modifier
@@ -2164,28 +2190,29 @@ fun RetroGridView(
         Column(
             modifier = Modifier
                 .fillMaxSize(0.9f)
-                .background(bgColor)
-                .border(2.dp, phosphorGreen)
-                .padding(24.dp)
+                .background(bgColor, RoundedCornerShape(12.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                .padding(32.dp)
                 .clickable(enabled = false) { }
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "STB GRID SELECTION",
-                    color = phosphorGreen,
-                    fontSize = 22.sp,
-                    fontFamily = FontFamily.Monospace,
+                    text = "CHANNEL GUIDE",
+                    color = Color.White,
+                    fontSize = 24.sp,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "3X3 NAV MODE",
-                    color = phosphorGreen.copy(alpha = 0.6f),
+                    text = "STB MODE",
+                    color = accentColor,
                     fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.SansSerif,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
@@ -2211,10 +2238,10 @@ fun RetroGridView(
             Spacer(modifier = Modifier.height(16.dp))
             
             Text(
-                text = "USE DPAD TO NAVIGATE | PRESS MENU TO EXIT",
-                color = phosphorGreen,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace,
+                text = "USE NAVIGATION KEYS TO SELECT",
+                color = Color.Gray,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
         }
@@ -2228,16 +2255,17 @@ fun GridViewItem(
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    val phosphorGreen = Color(0xFF00FF00)
+    val accentColor = Color.Cyan
 
     Box(
         modifier = Modifier
             .aspectRatio(16f / 10f)
-            .background(if (isPlaying) phosphorGreen.copy(alpha = 0.1f) else Color.Black)
+            .background(if (isPlaying) accentColor.copy(alpha = 0.1f) else Color.Black)
             .onFocusChanged { isFocused = it.isFocused }
-            .retroFocusEffect(isFocused, focusedColor = Color.Red, unfocusedColor = if (isPlaying) phosphorGreen else Color.DarkGray)
+            .modernFocusEffect(isFocused, focusedColor = Color.Cyan, unfocusedColor = if (isPlaying) accentColor else Color.DarkGray)
             .clickable { onClick() }
             .focusable()
+            .clip(RoundedCornerShape(8.dp))
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Thumbnail / Logo
@@ -2281,14 +2309,14 @@ fun GridViewItem(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(if (isFocused) phosphorGreen else Color.Black)
-                    .padding(4.dp)
+                    .background(if (isFocused) accentColor else Color.Black)
+                    .padding(8.dp)
             ) {
                 Text(
                     text = channel.name.uppercase(),
-                    color = if (isFocused) Color.Black else phosphorGreen,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace,
+                    color = if (isFocused) Color.Black else Color.White,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -2296,8 +2324,8 @@ fun GridViewItem(
                 Text(
                     text = "NO EPG DATA",
                     color = if (isFocused) Color.Black.copy(alpha = 0.7f) else Color.Gray,
-                    fontSize = 8.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.SansSerif,
                     maxLines = 1
                 )
             }
@@ -2340,13 +2368,13 @@ fun TuningStaticOverlay(isActive: Boolean) {
 }
 
 @Composable
-fun RetroKeyboard(
+fun SearchKeyboard(
     viewModel: IptvViewModel,
     onClose: () -> Unit
 ) {
     val keyboardInput by viewModel.keyboardInput.collectAsState()
-    val phosphorGreen = Color(0xFF00FF00)
-    val bgColor = Color(0xFF0C120C)
+    val accentColor = Color.Cyan
+    val bgColor = Color(0xFF121212)
     
     val keys = listOf(
         listOf("A", "B", "C", "D", "E", "F"),
@@ -2361,23 +2389,23 @@ fun RetroKeyboard(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.7f))
+            .background(Color.Black.copy(alpha = 0.8f))
             .clickable { onClose() },
         contentAlignment = Alignment.Center
     ) {
         Column(
             modifier = Modifier
                 .width(450.dp)
-                .background(bgColor)
-                .border(2.dp, phosphorGreen)
+                .background(bgColor, RoundedCornerShape(12.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
                 .padding(24.dp)
                 .clickable(enabled = false) { }
         ) {
             Text(
-                text = "RETRO SEARCH KEYBOARD",
-                color = phosphorGreen,
+                text = "SEARCH CHANNELS",
+                color = Color.White,
                 fontSize = 18.sp,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = 16.dp)
             )
@@ -2386,75 +2414,116 @@ fun RetroKeyboard(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(50.dp)
-                    .background(Color.Black)
-                    .border(1.dp, phosphorGreen)
-                    .padding(horizontal = 12.dp),
+                    .height(56.dp)
+                    .background(Color.Black, RoundedCornerShape(8.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
-                    text = "$keyboardInput|",
-                    color = phosphorGreen,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 20.sp
+                    text = if (keyboardInput.isEmpty()) "SEARCH..." else keyboardInput,
+                    color = if (keyboardInput.isEmpty()) Color.Gray else accentColor,
+                    fontFamily = FontFamily.SansSerif,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // Keys Grid
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                keys.forEach { row ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        row.forEach { key ->
-                            var isFocused by remember { mutableStateOf(false) }
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(40.dp)
-                                    .background(if (isFocused) phosphorGreen else Color.Transparent)
-                                    .border(1.dp, phosphorGreen)
-                                    .onFocusChanged { isFocused = it.isFocused }
-                                    .onKeyEvent { event ->
-                                        if (event.type == KeyEventType.KeyDown && 
-                                            (event.key == Key.Enter || event.key == Key.NumPadEnter || event.key == Key.DirectionCenter)) {
-                                            when (key) {
-                                                "SPACE" -> viewModel.updateKeyboardInput(keyboardInput + " ")
-                                                "BACK" -> if (keyboardInput.isNotEmpty()) viewModel.updateKeyboardInput(keyboardInput.dropLast(1))
-                                                "CLEAR" -> viewModel.updateKeyboardInput("")
-                                                "DONE" -> onClose()
-                                                else -> viewModel.updateKeyboardInput(keyboardInput + key)
-                                            }
-                                            true
-                                        } else false
-                                    }
-                                    .clickable {
-                                        when (key) {
-                                            "SPACE" -> viewModel.updateKeyboardInput(keyboardInput + " ")
-                                            "BACK" -> if (keyboardInput.isNotEmpty()) viewModel.updateKeyboardInput(keyboardInput.dropLast(1))
-                                            "CLEAR" -> viewModel.updateKeyboardInput("")
-                                            "DONE" -> onClose()
-                                            else -> viewModel.updateKeyboardInput(keyboardInput + key)
-                                        }
-                                    }
-                                    .focusable(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = key,
-                                    color = if (isFocused) Color.Black else phosphorGreen,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+            val flatKeys = keys.flatten()
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(6),
+                modifier = Modifier.height(300.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(flatKeys) { key ->
+                    var isFocused by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .height(44.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isFocused) accentColor else Color.White.copy(alpha = 0.05f))
+                            .border(1.dp, if (isFocused) accentColor else Color.White.copy(alpha = 0.1f), RoundedCornerShape(6.dp))
+                            .onFocusChanged { isFocused = it.isFocused }
+                            .clickable {
+                                when (key) {
+                                    "SPACE" -> viewModel.updateKeyboardInput(keyboardInput + " ")
+                                    "BACK" -> if (keyboardInput.isNotEmpty()) viewModel.updateKeyboardInput(keyboardInput.dropLast(1))
+                                    "CLEAR" -> viewModel.updateKeyboardInput("")
+                                    "DONE" -> onClose()
+                                    else -> viewModel.updateKeyboardInput(keyboardInput + key)
+                                }
                             }
-                        }
+                            .focusable(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = key,
+                            color = if (isFocused) Color.Black else Color.White,
+                            fontFamily = FontFamily.SansSerif,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun CountrySelectionOverlay(viewModel: IptvViewModel) {
+    val isVisible by viewModel.isCountryMenuVisible.collectAsState()
+    if (!isVisible) return
+
+    val accentColor = Color.Cyan
+    val bgColor = Color(0xFF121212)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.8f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .background(bgColor, RoundedCornerShape(12.dp))
+                .border(1.dp, accentColor, RoundedCornerShape(12.dp))
+                .padding(48.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "SELECT CATEGORY",
+                color = accentColor,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(24.dp))
+            val items = listOf(
+                "BANGLADESH",
+                "INDIA",
+                "INTERNATIONAL"
+            )
+            items.forEachIndexed { index, item ->
+                Text(
+                    text = item,
+                    color = Color.White,
+                    fontFamily = FontFamily.SansSerif,
+                    fontSize = 20.sp,
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "USE NAVIGATION KEYS TO SELECT",
+                color = accentColor.copy(alpha = 0.7f),
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 14.sp
+            )
         }
     }
 }
@@ -2467,7 +2536,7 @@ fun TechnicalStatsOverlay(viewModel: IptvViewModel) {
     val resolution by viewModel.streamResolution.collectAsState()
     val codec by viewModel.streamCodec.collectAsState()
     val bitrate by viewModel.streamBitrate.collectAsState()
-    val phosphorGreen = Color(0xFF00FF00)
+    val accentColor = Color.Cyan
 
     Box(
         modifier = Modifier
@@ -2477,31 +2546,31 @@ fun TechnicalStatsOverlay(viewModel: IptvViewModel) {
     ) {
         Column(
             modifier = Modifier
-                .background(Color.Black.copy(alpha = 0.85f))
-                .border(2.dp, phosphorGreen)
-                .padding(24.dp)
+                .background(Color.Black.copy(alpha = 0.95f), RoundedCornerShape(12.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
+                .padding(32.dp)
         ) {
             Text(
                 text = "STREAM TECHNICAL DATA",
-                color = phosphorGreen,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 16.sp,
+                color = Color.White,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 12.dp)
+                modifier = Modifier.padding(bottom = 16.dp)
             )
             
             val stats = listOf(
                 "RESOLUTION" to resolution,
                 "CODEC" to codec,
                 "BITRATE" to bitrate,
-                "TUNER" to "ANALOG-STB-9000",
-                "SYNC" to "VERTICAL-LOCK"
+                "QUALITY" to "16K ULTRA HD",
+                "STABILITY" to "OPTIMAL"
             )
 
             stats.forEach { (label, value) ->
-                Row(modifier = Modifier.fillMaxWidth(0.4f), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(text = "$label:", color = Color.Gray, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                    Text(text = value, color = phosphorGreen, fontFamily = FontFamily.Monospace, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(modifier = Modifier.fillMaxWidth(0.5f).padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = label, color = Color.Gray, fontFamily = FontFamily.SansSerif, fontSize = 12.sp)
+                    Text(text = value, color = accentColor, fontFamily = FontFamily.SansSerif, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -2514,7 +2583,7 @@ fun PinEntryDialog(viewModel: IptvViewModel) {
     if (!visible) return
 
     val pinBuffer by viewModel.pinBuffer.collectAsState()
-    val phosphorGreen = Color(0xFF00FF00)
+    val accentColor = Color.Cyan
 
     Box(
         modifier = Modifier
@@ -2526,15 +2595,15 @@ fun PinEntryDialog(viewModel: IptvViewModel) {
             Text(
                 text = "PARENTAL LOCK",
                 color = Color.Red,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = FontFamily.SansSerif,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = "ENTER 4-DIGIT PIN",
-                color = phosphorGreen,
-                fontFamily = FontFamily.Monospace,
+                color = accentColor,
+                fontFamily = FontFamily.SansSerif,
                 fontSize = 14.sp
             )
             Spacer(modifier = Modifier.height(24.dp))
@@ -2543,8 +2612,8 @@ fun PinEntryDialog(viewModel: IptvViewModel) {
                     val digit = if (i < pinBuffer.length) "*" else "_"
                     Text(
                         text = digit,
-                        color = phosphorGreen,
-                        fontFamily = FontFamily.Monospace,
+                        color = accentColor,
+                        fontFamily = FontFamily.SansSerif,
                         fontSize = 32.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -2631,31 +2700,32 @@ fun PlayerControlsOverlay(
 ) {
     if (player == null) return
 
-    val phosphorGreen = Color(0xFF00FF00)
-    val amber = Color(0xFFFFB000)
+    val accentColor = Color.Cyan
+    val secondaryColor = Color.White
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.4f))
+            .background(Color.Black.copy(alpha = 0.6f))
             .clickable { onClose() },
         contentAlignment = Alignment.BottomCenter
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFF050A05).copy(alpha = 0.9f))
-                .border(BorderStroke(1.dp, phosphorGreen))
-                .padding(32.dp)
+                .background(Color(0xFF121212).copy(alpha = 0.95f))
+                .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)))
+                .padding(48.dp)
                 .clickable(enabled = false) {}, // Prevent closing when clicking the panel itself
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = ">>> VIDEO PLAYBACK CONTROLS <<<",
-                color = phosphorGreen,
-                fontSize = 14.sp,
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold
+                text = "PLAYBACK CONTROLS",
+                color = accentColor,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -2671,10 +2741,10 @@ fun PlayerControlsOverlay(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = player.currentMediaItem?.mediaMetadata?.title?.toString() ?: "STREAMING...",
-                    color = phosphorGreen,
-                    fontSize = 18.sp,
-                    fontFamily = FontFamily.Monospace,
+                    text = player.currentMediaItem?.mediaMetadata?.title?.toString()?.uppercase() ?: "STREAMING DATA...",
+                    color = accentColor,
+                    fontSize = 20.sp,
+                    fontFamily = FontFamily.SansSerif,
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -2697,21 +2767,21 @@ fun PlayerControlsOverlay(
                         modifier = Modifier
                             .size(72.dp)
                             .onFocusChanged { isPlayPauseFocused = it.isFocused }
-                            .retroFocusEffect(isPlayPauseFocused, focusedColor = Color.Red, shape = CircleShape)
+                            .modernFocusEffect(isPlayPauseFocused, focusedColor = Color.Cyan, shape = CircleShape)
                             .focusable()
                     ) {
                         Text(
                             text = if (isPlaying) "||" else "▶",
-                            color = if (isPlayPauseFocused) Color.White else phosphorGreen,
+                            color = if (isPlayPauseFocused) Color.Black else Color.Cyan,
                             fontSize = 32.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
                         text = if (isPlaying) "PAUSE" else "RESUME",
-                        color = if (isPlayPauseFocused) Color.Red else Color.Gray,
+                        color = if (isPlayPauseFocused) Color.Cyan else Color.Gray,
                         fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.SansSerif,
                         modifier = Modifier.padding(top = 8.dp)
                     )
                 }
@@ -2726,22 +2796,22 @@ fun PlayerControlsOverlay(
                         modifier = Modifier
                             .size(72.dp)
                             .onFocusChanged { isQualityFocused = it.isFocused }
-                            .retroFocusEffect(isQualityFocused, focusedColor = Color.Red, shape = CircleShape)
+                            .modernFocusEffect(isQualityFocused, focusedColor = Color.Cyan, shape = CircleShape)
                             .focusable()
                     ) {
                         Text(
-                            text = "HD",
-                            color = if (isQualityFocused) Color.White else amber,
+                            text = "UHD",
+                            color = if (isQualityFocused) Color.Black else Color.White,
                             fontSize = 24.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.SansSerif
                         )
                     }
                     Text(
-                        text = "QUALITY",
-                        color = if (isQualityFocused) Color.Red else Color.Gray,
+                        text = "16K QUALITY",
+                        color = if (isQualityFocused) Color.Cyan else Color.Gray,
                         fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = FontFamily.SansSerif,
                         modifier = Modifier.padding(top = 8.dp)
                     )
                 }
@@ -2750,10 +2820,10 @@ fun PlayerControlsOverlay(
             Spacer(modifier = Modifier.height(24.dp))
             
             Text(
-                text = "[ PRESS BACK TO DISMISS ]",
+                text = "PRESS BACK TO DISMISS",
                 color = Color.DarkGray,
                 fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
+                fontFamily = FontFamily.SansSerif
             )
         }
     }

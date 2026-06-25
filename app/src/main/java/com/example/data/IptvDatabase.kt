@@ -31,7 +31,8 @@ data class IPTVChannel(
     val logoUrl: String? = null,
     val groupTitle: String? = null,
     val channelNumber: Int,
-    val isFavorite: Boolean = false
+    val isFavorite: Boolean = false,
+    @ColumnInfo(defaultValue = "1") val isActive: Boolean = true
 )
 
 @Dao
@@ -47,6 +48,9 @@ interface IptvDao {
 
     @Query("SELECT * FROM channels ORDER BY channelNumber ASC")
     fun getAllChannels(): Flow<List<IPTVChannel>>
+    
+    @Query("UPDATE channels SET isActive = :isActive WHERE id = :channelId")
+    suspend fun updateChannelActiveStatus(channelId: Int, isActive: Boolean)
 
     @Query("SELECT * FROM channels ORDER BY channelNumber ASC")
     suspend fun getAllChannelsNow(): List<IPTVChannel>
@@ -75,7 +79,7 @@ interface IptvDao {
 
 @Database(
     entities = [M3UPlaylist::class, IPTVChannel::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class IptvDatabase : RoomDatabase() {

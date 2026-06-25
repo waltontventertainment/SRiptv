@@ -14,11 +14,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 
 class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: IptvRepository
     private val sharedPrefs = application.getSharedPreferences("sr_iptv_prefs", Context.MODE_PRIVATE)
+    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
 
     // Data streams
     val playlists: StateFlow<List<M3UPlaylist>>
@@ -27,6 +29,12 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     // Core playback states
     private val _activeChannel = MutableStateFlow<IPTVChannel?>(null)
     val activeChannel: StateFlow<IPTVChannel?> = _activeChannel.asStateFlow()
+
+    private val _playbackPlaylist = MutableStateFlow<List<IPTVChannel>>(emptyList())
+    val playbackPlaylist: StateFlow<List<IPTVChannel>> = _playbackPlaylist.asStateFlow()
+
+    private val _playbackIndex = MutableStateFlow(-1)
+    val playbackIndex: StateFlow<Int> = _playbackIndex.asStateFlow()
 
     private val _selectedSourceUrl = MutableStateFlow<String?>(null)
     val selectedSourceUrl: StateFlow<String?> = _selectedSourceUrl.asStateFlow()
@@ -93,6 +101,9 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPinEntryVisible = MutableStateFlow(false)
     val isPinEntryVisible: StateFlow<Boolean> = _isPinEntryVisible.asStateFlow()
 
+    private val _isCountryMenuVisible = MutableStateFlow(false)
+    val isCountryMenuVisible: StateFlow<Boolean> = _isCountryMenuVisible.asStateFlow()
+
     private val _pinBuffer = MutableStateFlow("")
     val pinBuffer: StateFlow<String> = _pinBuffer.asStateFlow()
 
@@ -116,6 +127,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isQuickLocked = MutableStateFlow(false)
     val isQuickLocked: StateFlow<Boolean> = _isQuickLocked.asStateFlow()
+
+    private val _isOsdVisible = MutableStateFlow(false)
+    val isOsdVisible: StateFlow<Boolean> = _isOsdVisible.asStateFlow()
+
+    private var osdHideJob: Job? = null
 
     private val _selectedFontIndex = MutableStateFlow(0)
     val selectedFontIndex: StateFlow<Int> = _selectedFontIndex.asStateFlow()
@@ -183,6 +199,41 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             
             // Start Clock loop
             startClockLoop()
+
+            // Start auto verification for inactive channels
+            startAutoVerificationTimer()
+        }
+    }
+
+    private fun startAutoVerificationTimer() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(5 * 60 * 1000L) // 5 minutes
+                try {
+                    val allChannels = repository.getAllChannelsNow()
+                    val inactiveChannels = allChannels.filter { !it.isActive }
+                    
+                    for (channel in inactiveChannels) {
+                        try {
+                            val url = java.net.URL(channel.url)
+                            val connection = url.openConnection() as java.net.HttpURLConnection
+                            connection.requestMethod = "HEAD"
+                            connection.connectTimeout = 5000
+                            connection.readTimeout = 5000
+                            
+                            val responseCode = connection.responseCode
+                            if (responseCode in 200..299) {
+                                repository.updateChannelActiveStatus(channel.id, true)
+                            }
+                            connection.disconnect()
+                        } catch (e: Exception) {
+                            // Still dead, ignore
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Ignore general verification errors
+                }
+            }
         }
     }
 
@@ -194,6 +245,32 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
                 delay(1000)
             }
         }
+    }
+
+    fun toggleCountryMenu(visible: Boolean? = null) {
+        _isCountryMenuVisible.value = visible ?: !_isCountryMenuVisible.value
+    }
+
+    fun selectCategoryByNumber(num: Int) {
+        val cats = channels.value.mapNotNull { it.groupTitle }.distinct()
+        // Special case for the requirement: 1: Bangladesh, 2: India, 3: International
+        val targetCategory = when (num) {
+            1 -> cats.find { it.contains("Bangladesh", ignoreCase = true) || it.contains("BD", ignoreCase = true) }
+            2 -> cats.find { it.contains("India", ignoreCase = true) || it.contains("IN", ignoreCase = true) }
+            3 -> cats.find { !it.contains("Bangladesh", ignoreCase = true) && !it.contains("BD", ignoreCase = true) && 
+                              !it.contains("India", ignoreCase = true) && !it.contains("IN", ignoreCase = true) }
+            else -> null
+        }
+        
+        if (targetCategory != null) {
+            _selectedCategory.value = targetCategory
+            // Jump to first channel in this category
+            val firstInCat = channels.value.find { it.groupTitle == targetCategory && it.isActive }
+            if (firstInCat != null) {
+                setActiveChannel(firstInCat)
+            }
+        }
+        _isCountryMenuVisible.value = false
     }
 
     fun toggleGridView() {
@@ -384,6 +461,15 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Sets the active channel with a retro 1.0s static transit delay.
      */
+    fun showOsd() {
+        osdHideJob?.cancel()
+        _isOsdVisible.value = true
+        osdHideJob = viewModelScope.launch {
+            delay(4000)
+            _isOsdVisible.value = false
+        }
+    }
+
     fun setActiveChannel(channel: IPTVChannel) {
         viewModelScope.launch {
             val current = _activeChannel.value
@@ -393,6 +479,14 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             
             checkChannelLock(channel)
             _activeChannel.value = channel
+
+            // Update playback playlist for pre-loading (5-6 channels ahead)
+            val allActive = channels.value.filter { it.isActive }
+            val index = allActive.indexOfFirst { it.id == channel.id }
+            if (index != -1) {
+                _playbackPlaylist.value = allActive
+                _playbackIndex.value = index
+            }
             
             // If locked, show PIN entry immediately
             if (_isChannelLocked.value) {
@@ -415,15 +509,9 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             _isStreamError.value = false
             _streamErrorMessage.value = ""
 
-            // Replicate 1.0s CRT channel changing static and sound
-            staticOverlayJob?.cancel()
-            _isStaticActive.value = true
-            playWhiteNoiseSound()
-            
-            staticOverlayJob = viewModelScope.launch {
-                delay(1000) // Exactly 1-second physical STB relay transition
-                _isStaticActive.value = false
-            }
+            // Removed physical STB relay transition per user request for clean video
+            _isStaticActive.value = false
+            showOsd()
         }
     }
 
@@ -444,11 +532,34 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private var bufferingJob: Job? = null
+
     /**
      * Updates playback buffering state.
      */
     fun setStreamBuffering(buffering: Boolean) {
         _isStreamBuffering.value = buffering
+        if (buffering) {
+            bufferingJob?.cancel()
+            bufferingJob = viewModelScope.launch {
+                delay(10000L) // 10 seconds timeout
+                if (_isStreamBuffering.value) {
+                    setStreamError(true, "BUFFERING TIMEOUT")
+                    markCurrentChannelInactive()
+                }
+            }
+        } else {
+            bufferingJob?.cancel()
+            bufferingJob = null
+        }
+    }
+    
+    fun markCurrentChannelInactive() {
+        val channel = _activeChannel.value ?: return
+        viewModelScope.launch {
+            repository.updateChannelActiveStatus(channel.id, false)
+            zapNextChannel()
+        }
     }
 
     /**
@@ -466,7 +577,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * D-pad UP key zaps to next channel.
      */
     fun zapNextChannel() {
-        val channelList = channels.value
+        val channelList = channels.value.filter { it.isActive }
         if (channelList.isEmpty()) return
         val current = _activeChannel.value
         val index = if (current != null) {
@@ -482,7 +593,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * D-pad DOWN key zaps to previous channel.
      */
     fun zapPreviousChannel() {
-        val channelList = channels.value
+        val channelList = channels.value.filter { it.isActive }
         if (channelList.isEmpty()) return
         val current = _activeChannel.value
         val index = if (current != null) {
@@ -506,7 +617,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         _inputBufferText.value = currentBuffer
 
         numpadDebounceJob = viewModelScope.launch {
-            delay(1500) // 1.5-second remote debounce
+            delay(1000) // Shorter 1.0-second remote debounce for faster response
             commitNumpadInput()
         }
     }
@@ -542,8 +653,10 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         val current = _currentVolume.value
         if (increment && current < 10) {
             _currentVolume.value = current + 1
+            audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, 0)
         } else if (!increment && current > 0) {
             _currentVolume.value = current - 1
+            audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, 0)
         }
         _volumeDisplayVisible.value = true
 
