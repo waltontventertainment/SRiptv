@@ -2292,7 +2292,7 @@ fun EmptyTVState(modifier: Modifier = Modifier) {
             modifier = Modifier.fillMaxWidth(0.8f)
         ) {
             AsyncImage(
-                model = R.drawable.img_tv_banner,
+                model = R.drawable.ic_hero_banner,
                 contentDescription = "Hero Banner",
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3141,7 +3141,7 @@ fun IptvSplashScreen() {
                     )
             ) {
                 AsyncImage(
-                    model = R.drawable.img_tv_banner,
+                    model = R.drawable.ic_hero_banner,
                     contentDescription = "IPTV Customized Welcome Banner",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = androidx.compose.ui.layout.ContentScale.Crop
