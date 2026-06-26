@@ -64,6 +64,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -304,17 +305,7 @@ class MainActivity : ComponentActivity() {
 
                     // 2c. Stream Buffering Indicator
                     if (isStreamBuffering && !isStaticActive && !isStreamError) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            androidx.compose.material3.CircularProgressIndicator(
-                                color = Color.Cyan,
-                                strokeWidth = 3.dp,
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
+                        StyledBufferingIndicator()
                     }
 
                     // 2d. Retro Audio Spectrum Visualizer (Removed per user request to provide clean video)
@@ -670,7 +661,16 @@ fun AndroidVideoPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val attributionContext = remember(context) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            context.createAttributionContext("media_playback")
+        } else {
+            context
+        }
+    }
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
+    val dynamicsProcessingRef = remember { mutableStateOf<android.media.audiofx.DynamicsProcessing?>(null) }
+    val loudnessEnhancerRef = remember { mutableStateOf<android.media.audiofx.LoudnessEnhancer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
     val playlist by viewModel.playbackPlaylist.collectAsState()
     val playlistIndex by viewModel.playbackIndex.collectAsState()
@@ -682,8 +682,91 @@ fun AndroidVideoPlayer(
     }
 
     // Initialize Player
-    LaunchedEffect(context) {
+    LaunchedEffect(attributionContext) {
         if (playerInstance == null) {
+            // Re-release residual effects before initialization
+            dynamicsProcessingRef.value?.release()
+            loudnessEnhancerRef.value?.release()
+            dynamicsProcessingRef.value = null
+            loudnessEnhancerRef.value = null
+
+            // Audio Normalization, DRC, and Loudness Enhancer helper
+            val applyAudioEnhancement: (Int) -> Unit = { sessionId ->
+                if (sessionId != android.media.AudioManager.AUDIO_SESSION_ID_GENERATE && sessionId > 0) {
+                    try {
+                        dynamicsProcessingRef.value?.release()
+                        loudnessEnhancerRef.value?.release()
+                        dynamicsProcessingRef.value = null
+                        loudnessEnhancerRef.value = null
+
+                        // 1. LoudnessEnhancer - safe and comfortable gain boost (API 19+)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+                            val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
+                            enhancer.setTargetGain(350) // Comfortably boost by +3.5 dB
+                            enhancer.enabled = true
+                            loudnessEnhancerRef.value = enhancer
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+3.5 dB)")
+                        }
+
+                        // 2. DynamicsProcessing - Dynamic Range Compression & Brickwall Limiter (API 28+)
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                            val channelCount = 2
+                            val builder = android.media.audiofx.DynamicsProcessing.Config.Builder(
+                                android.media.audiofx.DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                                channelCount,
+                                false, 0, // PreEQ off
+                                true, 1,  // Multiband Compressor (1 band for simple DRC)
+                                false, 0, // PostEQ off
+                                true      // Hard Limiter active
+                            )
+                            val config = builder.build()
+
+                            for (ch in 0 until channelCount) {
+                                // Apply +2.0dB input gain normalization pre-amp per channel
+                                config.setInputGainByChannelIndex(ch, 2.0f)
+
+                                // Multiband Compressor (DRC) Configuration:
+                                // Smooth out quiet dialog vs loud action, making low TV volume highly audible
+                                val mbcBand = android.media.audiofx.DynamicsProcessing.MbcBand(
+                                    true,     // enabled
+                                    20000.0f, // cutoffFrequency (20kHz, full spectrum)
+                                    10.0f,    // attackTime (10ms)
+                                    60.0f,    // releaseTime (60ms)
+                                    3.0f,     // ratio (3:1 compression)
+                                    -24.0f,   // threshold (-24dB dynamic trigger)
+                                    4.0f,     // kneeWidth (4dB soft knee)
+                                    -60.0f,   // noiseGateThreshold
+                                    1.0f,     // expanderRatio
+                                    3.0f,     // preGain
+                                    1.0f      // postGain
+                                )
+                                config.setMbcBandByChannelIndex(ch, 0, mbcBand)
+
+                                // Brickwall Limiter to strictly prevent digital clipping and audio cracking ("sound fatbe na")
+                                val limiter = android.media.audiofx.DynamicsProcessing.Limiter(
+                                    true,    // inUse
+                                    true,    // enabled
+                                    0,       // linkGroup
+                                    2.0f,    // attackTime (2ms)
+                                    50.0f,   // releaseTime (50ms)
+                                    10.0f,   // ratio (10:1 hard limiting)
+                                    -1.5f,   // threshold (-1.5dB headroom)
+                                    0.0f     // postGain
+                                )
+                                config.setLimiterByChannelIndex(ch, limiter)
+                            }
+
+                            val dp = android.media.audiofx.DynamicsProcessing(0, sessionId, config)
+                            dp.enabled = true
+                            dynamicsProcessingRef.value = dp
+                            android.util.Log.d("AudioEnhancement", "DynamicsProcessing active on session $sessionId")
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("AudioEnhancement", "Failed to setup audio effects", e)
+                    }
+                }
+            }
+
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
                     2000,  // minBufferMs (extremely low buffer requirements for instant play)
@@ -700,7 +783,7 @@ fun AndroidVideoPlayer(
                 .setReadTimeoutMs(8000)
                 .setAllowCrossProtocolRedirects(true)
             
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(attributionContext)
                 .setDataSourceFactory(dataSourceFactory)
 
             val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
@@ -708,7 +791,7 @@ fun AndroidVideoPlayer(
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
-            val player = ExoPlayer.Builder(context)
+            val player = ExoPlayer.Builder(attributionContext)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)
@@ -720,6 +803,10 @@ fun AndroidVideoPlayer(
                 }
 
             player.addListener(object : androidx.media3.common.Player.Listener {
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    applyAudioEnhancement(audioSessionId)
+                }
+
                 override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                     val format = player.videoFormat
                     val codec = format?.sampleMimeType?.substringAfterLast("/") ?: "N/A"
@@ -760,12 +847,13 @@ fun AndroidVideoPlayer(
             })
 
             playerInstance = player
+            applyAudioEnhancement(player.audioSessionId)
             onPlayerCreated(player)
         }
     }
 
     // Sync Playlist and Position
-    LaunchedEffect(playlist, playlistIndex) {
+    LaunchedEffect(playlist, playlistIndex, playerInstance) {
         playerInstance?.let { player ->
             if (playlist.isEmpty() || playlistIndex == -1) return@LaunchedEffect
 
@@ -786,16 +874,33 @@ fun AndroidVideoPlayer(
 
             if (incomingMediaItems.isEmpty()) return@LaunchedEffect
 
-            // Check if playlist has changed significantly or we just need to seek
-            val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size && 
-                                incomingMediaItems.firstOrNull()?.mediaId == currentMediaItems.firstOrNull()?.mediaId
+            // Check if playlist has changed significantly
+            val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size
 
-            if (!isSamePlaylist) {
-                player.setMediaItems(incomingMediaItems)
-                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
-                player.prepare()
-            } else if (player.currentMediaItemIndex != playlistIndex) {
-                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+            try {
+                if (!isSamePlaylist) {
+                    viewModel.setStreamBuffering(true)
+                    viewModel.setStreamError(false)
+                    player.setMediaItems(incomingMediaItems)
+                    player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                    player.prepare()
+                    player.play()
+                } else if (player.currentMediaItemIndex != playlistIndex) {
+                    viewModel.setStreamBuffering(true)
+                    viewModel.setStreamError(false)
+                    player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                    player.prepare()
+                    player.play()
+                } else {
+                    if (player.playbackState == androidx.media3.common.Player.STATE_IDLE || player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+                        player.prepare()
+                    }
+                    player.play()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AndroidVideoPlayer", "Error loading media items", e)
+                viewModel.setStreamError(true, "FORMAT ERROR")
+                viewModel.setStreamBuffering(false)
             }
         }
     }
@@ -807,6 +912,11 @@ fun AndroidVideoPlayer(
 
     DisposableEffect(Unit) {
         onDispose {
+            dynamicsProcessingRef.value?.release()
+            loudnessEnhancerRef.value?.release()
+            dynamicsProcessingRef.value = null
+            loudnessEnhancerRef.value = null
+
             playerInstance?.release()
             onPlayerReleased()
         }
@@ -3182,6 +3292,31 @@ fun IptvSplashScreen() {
                     .width(180.dp)
                     .height(4.dp)
                     .clip(RoundedCornerShape(2.dp))
+            )
+        }
+    }
+}
+
+@Composable
+fun StyledBufferingIndicator() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.3f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            androidx.compose.material3.CircularProgressIndicator(
+                color = MaterialTheme.colorScheme.primary,
+                strokeWidth = 4.dp,
+                strokeCap = StrokeCap.Round,
+                modifier = Modifier.size(64.dp)
+            )
+            androidx.compose.material3.Text(
+                text = "Loading Channel...",
+                color = Color.White,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 16.dp)
             )
         }
     }
