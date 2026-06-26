@@ -162,6 +162,15 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private var sleepTimerJob: Job? = null
 
     init {
+        // Initialize system stream volume safely to ensure sound is audible on launch
+        try {
+            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            val systemTargetVol = (7 * maxSystemVol) / 10
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, systemTargetVol, 0)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val database = Room.databaseBuilder(
             application,
             IptvDatabase::class.java,

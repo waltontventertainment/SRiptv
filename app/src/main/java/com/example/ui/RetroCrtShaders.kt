@@ -23,39 +23,7 @@ import java.util.Random
  * Self-contained, does not require any asset files.
  */
 fun playWhiteNoiseSound() {
-    Thread {
-        try {
-            val sampleRate = 22050
-            val durationSeconds = 0.8
-            val numSamples = (sampleRate * durationSeconds).toInt()
-            val buffer = ShortArray(numSamples)
-            val random = Random()
-            
-            for (i in 0 until numSamples) {
-                // Generate randomized PCM samples for fuzzy analog static sound
-                buffer[i] = (random.nextInt(14000) - 7000).toShort()
-            }
-            
-            val audioTrack = AudioTrack(
-                AudioManager.STREAM_MUSIC,
-                sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                numSamples * 2,
-                AudioTrack.MODE_STATIC
-            )
-            
-            audioTrack.write(buffer, 0, numSamples)
-            audioTrack.play()
-            
-            // Wait for duration to complete then release resources
-            Thread.sleep((durationSeconds * 1000).toLong())
-            audioTrack.stop()
-            audioTrack.release()
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }.start()
+    // Empty per user request to remove sound effects on channel changes
 }
 
 /**

@@ -767,20 +767,20 @@ fun AndroidVideoPlayer(
                     // Safe release first
                     safeReleaseEffects()
 
-                    // 1. LoudnessEnhancer - Supercharged volume boost for low-gain audio streams
+                    // 1. LoudnessEnhancer - Supercharged safe volume boost for low-gain audio streams
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
                         try {
                             val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(3600) // Supercharge boost by +36.0 dB (extreme volume gain!)
+                            enhancer.setTargetGain(2000) // Professional safe boost by +20.0 dB (extreme but non-clipping volume gain!)
                             enhancer.enabled = true
                             loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+36.0 dB)")
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+20.0 dB)")
                         } catch (e: Exception) {
                             android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
                         }
                     }
 
-                    // 2. DynamicsProcessing - Dynamic Range Compression & Brickwall Limiter to make dialog audible and limit crackles
+                    // 2. DynamicsProcessing - Clean Dynamic Range Compression & Brickwall Limiter
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
                         try {
                             val channelCount = 2
@@ -795,8 +795,8 @@ fun AndroidVideoPlayer(
                             val config = builder.build()
 
                             for (ch in 0 until channelCount) {
-                                // Apply +18.0dB input gain normalization pre-amp per channel to boost faint streams
-                                config.setInputGainByChannelIndex(ch, 18.0f)
+                                // Apply +8.0dB input gain normalization pre-amp per channel to safely boost faint streams
+                                config.setInputGainByChannelIndex(ch, 8.0f)
 
                                 // Multiband Compressor (DRC) Configuration:
                                 // Smooth out quiet dialog vs loud action, making low TV volume highly audible
@@ -805,13 +805,13 @@ fun AndroidVideoPlayer(
                                     20000.0f, // cutoffFrequency (20kHz, full spectrum)
                                     5.0f,     // attackTime (5ms)
                                     45.0f,    // releaseTime (45ms)
-                                    5.0f,     // ratio (5:1 compression for strong leveling)
-                                    -35.0f,   // threshold (-35dB dynamic trigger to capture quiet audio and lift it)
+                                    4.0f,     // ratio (4:1 compression for strong leveling)
+                                    -30.0f,   // threshold (-30dB dynamic trigger)
                                     6.0f,     // kneeWidth (6dB soft knee)
                                     -60.0f,   // noiseGateThreshold
                                     1.0f,     // expanderRatio
-                                    18.0f,    // preGain (strongly boost dynamic range up to +18dB)
-                                    3.0f      // postGain
+                                    6.0f,     // preGain (+6dB pre-amp compression)
+                                    2.0f      // postGain
                                 )
                                 config.setMbcBandByChannelIndex(ch, 0, mbcBand)
 
@@ -822,9 +822,9 @@ fun AndroidVideoPlayer(
                                     0,       // linkGroup
                                     1.0f,    // attackTime (1ms)
                                     40.0f,   // releaseTime (40ms)
-                                    12.0f,   // ratio (12:1 hard limiting)
+                                    10.0f,   // ratio (10:1 hard limiting)
                                     -1.0f,   // threshold (-1.0dB headroom to maximize loudness)
-                                    3.0f     // postGain (make up +3.0dB post-compression)
+                                    2.0f     // postGain (make up +2.0dB post-compression)
                                 )
                                 config.setLimiterByChannelIndex(ch, limiter)
                             }
@@ -1031,8 +1031,8 @@ fun AndroidVideoPlayer(
     }
 
     val currentVolume by viewModel.currentVolume.collectAsState()
-    LaunchedEffect(currentVolume) {
-        playerInstance?.volume = currentVolume / 10f
+    LaunchedEffect(currentVolume, playerInstance) {
+        playerInstance?.volume = if (currentVolume == 0) 0f else 1.0f
     }
 
     DisposableEffect(Unit) {
@@ -3893,6 +3893,41 @@ fun IptvSplashScreen() {
 
 @Composable
 fun StyledBufferingIndicator() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    color = Color.Cyan,
+                    strokeWidth = 3.dp,
+                    modifier = Modifier.size(36.dp)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "BUFFERING...",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.SansSerif
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun StyledBufferingIndicatorOld() {
     // 1. Dynamic Frequency Tuning Animation
     val infiniteTransition = rememberInfiniteTransition(label = "TuningIndicators")
     
