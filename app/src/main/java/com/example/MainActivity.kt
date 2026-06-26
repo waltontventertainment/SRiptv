@@ -771,10 +771,10 @@ fun AndroidVideoPlayer(
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
                         try {
                             val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(2800) // Supercharge boost by +28.0 dB (extreme volume gain!)
+                            enhancer.setTargetGain(3600) // Supercharge boost by +36.0 dB (extreme volume gain!)
                             enhancer.enabled = true
                             loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+28.0 dB)")
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+36.0 dB)")
                         } catch (e: Exception) {
                             android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
                         }
@@ -795,8 +795,8 @@ fun AndroidVideoPlayer(
                             val config = builder.build()
 
                             for (ch in 0 until channelCount) {
-                                // Apply +15.0dB input gain normalization pre-amp per channel to boost faint streams
-                                config.setInputGainByChannelIndex(ch, 15.0f)
+                                // Apply +18.0dB input gain normalization pre-amp per channel to boost faint streams
+                                config.setInputGainByChannelIndex(ch, 18.0f)
 
                                 // Multiband Compressor (DRC) Configuration:
                                 // Smooth out quiet dialog vs loud action, making low TV volume highly audible
@@ -810,7 +810,7 @@ fun AndroidVideoPlayer(
                                     6.0f,     // kneeWidth (6dB soft knee)
                                     -60.0f,   // noiseGateThreshold
                                     1.0f,     // expanderRatio
-                                    15.0f,    // preGain (strongly boost dynamic range up to +15dB)
+                                    18.0f,    // preGain (strongly boost dynamic range up to +18dB)
                                     3.0f      // postGain
                                 )
                                 config.setMbcBandByChannelIndex(ch, 0, mbcBand)
@@ -824,7 +824,7 @@ fun AndroidVideoPlayer(
                                     40.0f,   // releaseTime (40ms)
                                     12.0f,   // ratio (12:1 hard limiting)
                                     -1.0f,   // threshold (-1.0dB headroom to maximize loudness)
-                                    0.0f     // postGain
+                                    3.0f     // postGain (make up +3.0dB post-compression)
                                 )
                                 config.setLimiterByChannelIndex(ch, limiter)
                             }
@@ -855,7 +855,7 @@ fun AndroidVideoPlayer(
                     try {
                         val bassBoost = android.media.audiofx.BassBoost(0, sessionId)
                         if (bassBoost.strengthSupported) {
-                            bassBoost.setStrength(900.toShort()) // Strong bass feel (0 to 1000)
+                            bassBoost.setStrength(1000.toShort()) // Maximum bass boost feel
                         }
                         bassBoost.enabled = true
                         bassBoostRef.value = bassBoost
@@ -876,10 +876,10 @@ fun AndroidVideoPlayer(
                                 // Boost mid/vocal frequencies (500Hz to 4000Hz) and bass frequencies under 150Hz
                                 if (centerFreq in 500000..4000000) {
                                     // Extreme dialogue boost
-                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.90f).toInt().toShort()) // 90% of maximum equalizer range
+                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.95f).toInt().toShort()) // 95% of maximum equalizer range
                                 } else if (centerFreq < 200000) {
-                                    // Bass frequencies boost
-                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.50f).toInt().toShort())
+                                    // Heavy Bass frequencies boost
+                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.80f).toInt().toShort()) // 80% boost for rich retro warm feel
                                 }
                             }
                         }
