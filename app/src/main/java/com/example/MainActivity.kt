@@ -661,13 +661,6 @@ fun AndroidVideoPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val attributionContext = remember(context) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            context.createAttributionContext("media_playback")
-        } else {
-            context
-        }
-    }
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     val dynamicsProcessingRef = remember { mutableStateOf<android.media.audiofx.DynamicsProcessing?>(null) }
     val loudnessEnhancerRef = remember { mutableStateOf<android.media.audiofx.LoudnessEnhancer?>(null) }
@@ -682,7 +675,7 @@ fun AndroidVideoPlayer(
     }
 
     // Initialize Player
-    LaunchedEffect(attributionContext) {
+    LaunchedEffect(Unit) {
         if (playerInstance == null) {
             // Re-release residual effects before initialization
             dynamicsProcessingRef.value?.release()
@@ -783,7 +776,7 @@ fun AndroidVideoPlayer(
                 .setReadTimeoutMs(8000)
                 .setAllowCrossProtocolRedirects(true)
             
-            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(attributionContext)
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
                 .setDataSourceFactory(dataSourceFactory)
 
             val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
@@ -791,7 +784,7 @@ fun AndroidVideoPlayer(
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
-            val player = ExoPlayer.Builder(attributionContext)
+            val player = ExoPlayer.Builder(context)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)
