@@ -1032,7 +1032,7 @@ fun AndroidVideoPlayer(
 
     val currentVolume by viewModel.currentVolume.collectAsState()
     LaunchedEffect(currentVolume, playerInstance) {
-        playerInstance?.volume = currentVolume / 10f
+        playerInstance?.volume = (currentVolume / 10f) * 3.0f
     }
 
     DisposableEffect(Unit) {
