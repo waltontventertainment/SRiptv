@@ -398,61 +398,30 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * Triggers the analog auto-tuning animation.
      * Sweeps frequency sequentially from 45.25 MHz to 800 MHz.
      */
-    fun runAnalogAutoTuning(isFirstLaunch: Boolean = false) {
+    fun runAnalogAutoTuning(isFirstLaunch: Boolean = false, playlistIdToSelect: Int? = null) {
         viewModelScope.launch {
-            _isTuning.value = true
-            _isStaticActive.value = true
-            playWhiteNoiseSound()
+            _isTuning.value = false
+            _isStaticActive.value = false
 
             val currentChannels = repository.getAllChannelsNow()
-            val totalSteps = 40
-            val startFreq = 45.25f
-            val endFreq = 800.00f
-            val freqStep = (endFreq - startFreq) / totalSteps
-
             if (currentChannels.isEmpty()) {
-                // No channels - sweep with error
-                for (step in 0..totalSteps) {
-                    val currentFreq = startFreq + (freqStep * step)
-                    _tuningFrequency.value = currentFreq
-                    _tuningStatusText.value = "SEARCHING VHF/UHF BANDS: ${String.format("%.2f", currentFreq)} MHz..."
-                    
-                    if (step % 12 == 0) {
-                        playWhiteNoiseSound()
-                    }
-                    delay(80)
-                }
                 _tuningStatusText.value = "ERROR: NO CHANNELS DETECTED. PLEASE IMPORT M3U PLAYLIST SOURCE."
-                delay(2000)
-                _isTuning.value = false
-                _isStaticActive.value = false
-            } else {
-                // Sweep and map real channels to frequency segments
-                val stepInterval = (totalSteps / currentChannels.size).coerceAtLeast(1)
-                for (step in 0..totalSteps) {
-                    val currentFreq = startFreq + (freqStep * step)
-                    _tuningFrequency.value = currentFreq
-                    
-                    // Check if we hit a step to lock a real channel
-                    val channelIndex = step / stepInterval
-                    if (step % stepInterval == 0 && channelIndex < currentChannels.size) {
-                        val lockingChannel = currentChannels[channelIndex]
-                        _tuningStatusText.value = "LOCKING CH ${lockingChannel.channelNumber}: ${lockingChannel.name.uppercase()} AT ${String.format("%.2f", currentFreq)} MHz..."
-                        playWhiteNoiseSound()
-                        delay(400)
-                    } else {
-                        _tuningStatusText.value = "SCANNING ANALOG FREQUENCY: ${String.format("%.2f", currentFreq)} MHz"
-                        delay(80)
-                    }
+                return@launch
+            }
+
+            // Immediately tune to first channel or restore
+            sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
+            if (playlistIdToSelect != null) {
+                val plist = playlists.value.find { it.id == playlistIdToSelect }
+                val pChannels = repository.getChannelsByPlaylist(playlistIdToSelect)
+                if (pChannels.isNotEmpty()) {
+                    _selectedSourceUrl.value = plist?.url
+                    sharedPrefs.edit().putString("last_selected_source_url", plist?.url ?: "").apply()
+                    setActiveChannel(pChannels.first())
+                } else {
+                    restoreLastWatchedChannel()
                 }
-                
-                _tuningStatusText.value = "SUCCESS: ${currentChannels.size} CHANNELS INSTALLED!"
-                delay(1500)
-                _isTuning.value = false
-                _isStaticActive.value = false
-                
-                // Tune to first channel or restore
-                sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
+            } else {
                 restoreLastWatchedChannel()
             }
         }
@@ -486,8 +455,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             checkChannelLock(finalChannel)
             _activeChannel.value = finalChannel
 
-            // Update playback playlist for pre-loading (5-6 channels ahead)
-            val allActive = channels.value.map { if (it.id == finalChannel.id) finalChannel else it }.filter { it.isActive }
+            // Update playback playlist for pre-loading (5-6 channels ahead) inside this playlist ONLY
+            val allActive = channels.value
+                .filter { it.playlistId == finalChannel.playlistId }
+                .map { if (it.id == finalChannel.id) finalChannel else it }
+                .filter { it.isActive }
             val index = allActive.indexOfFirst { it.id == finalChannel.id }
             if (index != -1) {
                 _playbackPlaylist.value = allActive
@@ -584,9 +556,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * D-pad UP key zaps to next channel.
      */
     fun zapNextChannel() {
-        val channelList = channels.value.filter { it.isActive }
-        if (channelList.isEmpty()) return
         val current = _activeChannel.value
+        val playlistId = current?.playlistId
+        val channelList = channels.value
+            .filter { it.isActive && (playlistId == null || it.playlistId == playlistId) }
+        if (channelList.isEmpty()) return
         val index = if (current != null) {
             val i = channelList.indexOfFirst { it.id == current.id }
             if (i == -1) 0 else (i + 1) % channelList.size
@@ -600,9 +574,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * D-pad DOWN key zaps to previous channel.
      */
     fun zapPreviousChannel() {
-        val channelList = channels.value.filter { it.isActive }
-        if (channelList.isEmpty()) return
         val current = _activeChannel.value
+        val playlistId = current?.playlistId
+        val channelList = channels.value
+            .filter { it.isActive && (playlistId == null || it.playlistId == playlistId) }
+        if (channelList.isEmpty()) return
         val index = if (current != null) {
             val i = channelList.indexOfFirst { it.id == current.id }
             if (i == -1) 0 else (i - 1 + channelList.size) % channelList.size
@@ -638,8 +614,9 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         if (input.isEmpty()) return
 
         val targetNum = input.toIntOrNull() ?: return
+        val currentPlaylistId = _activeChannel.value?.playlistId
         viewModelScope.launch {
-            val matchedChannel = repository.getChannelByNumber(targetNum)
+            val matchedChannel = repository.getChannelByNumber(targetNum, currentPlaylistId)
             if (matchedChannel != null) {
                 setActiveChannel(matchedChannel)
             } else {
@@ -710,10 +687,10 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             _isImporting.value = false
-            _importedPlaylistResult.emit(result)
+            _importedPlaylistResult.emit(result.map { })
             if (result.isSuccess) {
-                // Run analog tuning to scan these channels sequentially
-                runAnalogAutoTuning(isFirstLaunch = false)
+                // Run analog tuning to scan these channels sequentially and select this playlist
+                runAnalogAutoTuning(isFirstLaunch = false, playlistIdToSelect = result.getOrNull())
             }
         }
     }
@@ -735,10 +712,10 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             _isImporting.value = false
-            _importedPlaylistResult.emit(result)
+            _importedPlaylistResult.emit(result.map { })
             if (result.isSuccess) {
-                // Run analog tuning to scan these channels sequentially
-                runAnalogAutoTuning(isFirstLaunch = false)
+                // Run analog tuning to scan these channels sequentially and select this playlist
+                runAnalogAutoTuning(isFirstLaunch = false, playlistIdToSelect = result.getOrNull())
             }
         }
     }

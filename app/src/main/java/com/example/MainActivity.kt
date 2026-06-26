@@ -1528,6 +1528,8 @@ fun SettingsTriggerButton(
     }
 }
 
+private data class PresetM3U(val name: String, val url: String, val category: String)
+
 /**
  * Slide-out Retro STB Playlist Configuration Settings Panel.
  */
@@ -1723,37 +1725,95 @@ fun SettingsMenu(
 
             // Quick ADD Sources
             Text(
-                text = "QUICK ADD SOURCES",
+                text = "PRE-CONFIGURED FREE SOURCES",
                 color = secondaryColor,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.SemiBold
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                var isBdFocused by remember { mutableStateOf(false) }
-                OutlinedButton(
-                    onClick = {
-                        playlistName = "BD CHANNELS"
-                        playlistUrl = "https://iptv-org.github.io/iptv/countries/bd.m3u"
-                    },
-                    modifier = Modifier.weight(1f).onFocusChanged { isBdFocused = it.isFocused }.modernFocusEffect(isBdFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isBdFocused) Color.White else accentColor),
-                    border = BorderStroke(1.dp, if (isBdFocused) Color.Cyan else accentColor)
-                ) {
-                    Text("BD IPTV", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
-                }
-                var isWorldFocused by remember { mutableStateOf(false) }
-                OutlinedButton(
-                    onClick = {
-                        playlistName = "WORLD CHANNELS"
-                        playlistUrl = "https://iptv-org.github.io/iptv/index.m3u"
-                    },
-                    modifier = Modifier.weight(1f).onFocusChanged { isWorldFocused = it.isFocused }.modernFocusEffect(isWorldFocused),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = if (isWorldFocused) Color.White else accentColor),
-                    border = BorderStroke(1.dp, if (isWorldFocused) Color.Cyan else accentColor)
-                ) {
-                    Text("WORLD IPTV", fontSize = 10.sp, fontFamily = FontFamily.SansSerif)
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val presets = listOf(
+                    PresetM3U("Bangladesh (BD IPTV)", "https://iptv-org.github.io/iptv/countries/bd.m3u", "LOCAL BD"),
+                    PresetM3U("Global Channels (World)", "https://iptv-org.github.io/iptv/index.m3u", "GLOBAL"),
+                    PresetM3U("International News Live", "https://iptv-org.github.io/iptv/categories/news.m3u", "NEWS"),
+                    PresetM3U("Global Sports Network", "https://iptv-org.github.io/iptv/categories/sports.m3u", "SPORTS"),
+                    PresetM3U("Music & Entertainment", "https://iptv-org.github.io/iptv/categories/music.m3u", "MUSIC"),
+                    PresetM3U("Movies & Cinema", "https://iptv-org.github.io/iptv/categories/movies.m3u", "MOVIES"),
+                    PresetM3U("Kids & Family TV", "https://iptv-org.github.io/iptv/categories/kids.m3u", "KIDS"),
+                    PresetM3U("Documentary & History", "https://iptv-org.github.io/iptv/categories/documentary.m3u", "DOCUMENTARY"),
+                    PresetM3U("Science & Tech", "https://iptv-org.github.io/iptv/categories/science.m3u", "SCIENCE"),
+                    PresetM3U("Comedy TV Feeds", "https://iptv-org.github.io/iptv/categories/comedy.m3u", "COMEDY"),
+                    PresetM3U("Education Streams", "https://iptv-org.github.io/iptv/categories/education.m3u", "EDUCATION")
+                )
+                
+                presets.forEach { preset ->
+                    var isPresetFocused by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isPresetFocused) Color.Cyan.copy(alpha = 0.12f) else Color.Transparent, RoundedCornerShape(4.dp))
+                            .onFocusChanged { isPresetFocused = it.isFocused }
+                            .modernFocusEffect(isPresetFocused, focusedColor = Color.Cyan)
+                            .clickable {
+                                playlistName = preset.name.uppercase()
+                                playlistUrl = preset.url
+                            }
+                            .focusable()
+                            .padding(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = preset.name.uppercase(),
+                                    color = if (isPresetFocused) Color.White else accentColor,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.SansSerif,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "CATEGORY: ${preset.category}",
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.SansSerif
+                                )
+                            }
+                            
+                            var isQuickImportFocused by remember { mutableStateOf(false) }
+                            Box(
+                                modifier = Modifier
+                                    .onFocusChanged { isQuickImportFocused = it.isFocused }
+                                    .modernFocusEffect(isQuickImportFocused, focusedColor = Color.Green, shape = RoundedCornerShape(4.dp))
+                                    .clickable {
+                                        if (!isImporting) {
+                                            viewModel.importPlaylist(preset.name.uppercase(), preset.url)
+                                        }
+                                    }
+                                    .focusable()
+                                    .border(1.dp, if (isQuickImportFocused) Color.Green else accentColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = "LOAD",
+                                    color = if (isQuickImportFocused) Color.Green else accentColor,
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.SansSerif,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

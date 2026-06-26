@@ -21,7 +21,7 @@ data class M3UPlaylist(
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index(value = ["playlistId"]), Index(value = ["channelNumber"], unique = true)]
+    indices = [Index(value = ["playlistId"]), Index(value = ["playlistId", "channelNumber"], unique = true)]
 )
 data class IPTVChannel(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
@@ -70,6 +70,9 @@ interface IptvDao {
     @Query("SELECT MAX(channelNumber) FROM channels")
     suspend fun getMaxChannelNumber(): Int?
 
+    @Query("SELECT * FROM channels WHERE playlistId = :playlistId AND channelNumber = :num LIMIT 1")
+    suspend fun getChannelByNumberAndPlaylist(playlistId: Int, num: Int): IPTVChannel?
+
     @Query("SELECT * FROM channels WHERE channelNumber = :num LIMIT 1")
     suspend fun getChannelByNumber(num: Int): IPTVChannel?
 
@@ -79,7 +82,7 @@ interface IptvDao {
 
 @Database(
     entities = [M3UPlaylist::class, IPTVChannel::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class IptvDatabase : RoomDatabase() {

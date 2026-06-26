@@ -27,8 +27,12 @@ class IptvRepository(private val iptvDao: IptvDao) {
         iptvDao.updateChannelActiveStatus(channelId, isActive)
     }
 
-    suspend fun getChannelByNumber(num: Int): IPTVChannel? = withContext(Dispatchers.IO) {
-        iptvDao.getChannelByNumber(num)
+    suspend fun getChannelByNumber(num: Int, playlistId: Int? = null): IPTVChannel? = withContext(Dispatchers.IO) {
+        if (playlistId != null) {
+            iptvDao.getChannelByNumberAndPlaylist(playlistId, num)
+        } else {
+            iptvDao.getChannelByNumber(num)
+        }
     }
 
     suspend fun toggleFavorite(channel: IPTVChannel) = withContext(Dispatchers.IO) {
@@ -40,62 +44,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
      * This creates a system playlist with ID 1 and populates it with beautiful live feeds.
      */
     suspend fun seedDefaultChannelsIfEmpty() = withContext(Dispatchers.IO) {
-        val count = iptvDao.getChannelCount()
-        if (count == 0) {
-            Log.d("IptvRepository", "Database is empty. Seeding default analog streams...")
-            val playlistId = iptvDao.insertPlaylist(
-                M3UPlaylist(
-                    id = 1,
-                    name = "Retro Default Feed",
-                    url = "system://default"
-                )
-            ).toInt()
-
-            val defaultStreams = listOf(
-                IPTVChannel(
-                    playlistId = playlistId,
-                    name = "NASA TV Media",
-                    url = "https://nasa-ottdestination.amagi.tv/playlist.m3u8",
-                    logoUrl = "https://www.nasa.gov/wp-content/themes/nasa/assets/images/nasa-logo.svg",
-                    groupTitle = "Science",
-                    channelNumber = 1
-                ),
-                IPTVChannel(
-                    playlistId = playlistId,
-                    name = "Akamai Test Feed",
-                    url = "https://cph-p2p-msl.akamaized.net/hls/live/2000341/test/master.m3u8",
-                    logoUrl = null,
-                    groupTitle = "Test Cards",
-                    channelNumber = 2
-                ),
-                IPTVChannel(
-                    playlistId = playlistId,
-                    name = "Mux Bunny Channel",
-                    url = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-                    logoUrl = null,
-                    groupTitle = "Retro Cartoons",
-                    channelNumber = 3
-                ),
-                IPTVChannel(
-                    playlistId = playlistId,
-                    name = "Tears of Steel HLS",
-                    url = "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8",
-                    logoUrl = null,
-                    groupTitle = "Cinematics",
-                    channelNumber = 4
-                ),
-                IPTVChannel(
-                    playlistId = playlistId,
-                    name = "Sintel Movie Feed",
-                    url = "https://bitdash-a.akamaihd.net/content/sintel/hls/playlist.m3u8",
-                    logoUrl = null,
-                    groupTitle = "Cinematics",
-                    channelNumber = 5
-                )
-            )
-            iptvDao.insertChannels(defaultStreams)
-            Log.d("IptvRepository", "Default channels seeded successfully.")
-        }
+        // No-op. Starting clean without pre-loaded demo active channels.
     }
 
     /**
@@ -106,7 +55,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
         name: String,
         urlString: String,
         onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             onProgress("CONNECTING TO SERVER...", 0, 0)
             Log.d("IptvRepository", "Importing playlist: $name from $urlString")
@@ -169,7 +118,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
         uri: android.net.Uri,
         context: android.content.Context,
         onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             onProgress("OPENING LOCAL FILE...", 0, 0)
             val inputStream = context.contentResolver.openInputStream(uri)
@@ -197,7 +146,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
         inputStream: java.io.InputStream,
         contentLength: Int,
         onProgress: (status: String, percent: Int, channelCount: Int) -> Unit
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val reader = BufferedReader(InputStreamReader(inputStream))
             onProgress("READING PLAYLIST...", 5, 0)
@@ -206,9 +155,8 @@ class IptvRepository(private val iptvDao: IptvDao) {
             val playlist = M3UPlaylist(name = name, url = urlString)
             val playlistId = iptvDao.insertPlaylist(playlist).toInt()
 
-            // Find starting channel number to prevent overlap
-            val maxChannelNum = iptvDao.getMaxChannelNumber() ?: 0
-            val startChannelNum = if (maxChannelNum == 0) 1 else maxChannelNum + 1
+            // Every playlist's channel numbers start from 1
+            val startChannelNum = 1
 
             val channels = mutableListOf<IPTVChannel>()
             var currentName: String? = null
@@ -320,7 +268,7 @@ class IptvRepository(private val iptvDao: IptvDao) {
                 
                 onProgress("IMPORT COMPLETED!", 100, sortedChannels.size)
                 Log.d("IptvRepository", "Imported ${channels.size} channels.")
-                Result.success(Unit)
+                Result.success(playlistId)
             } else {
                 iptvDao.deletePlaylist(playlistId)
                 Result.failure(Exception("No valid channels found in the M3U file"))
@@ -336,6 +284,10 @@ class IptvRepository(private val iptvDao: IptvDao) {
      */
     suspend fun deletePlaylist(playlistId: Int) = withContext(Dispatchers.IO) {
         iptvDao.deletePlaylist(playlistId)
+    }
+
+    suspend fun getChannelsByPlaylist(playlistId: Int): List<IPTVChannel> = withContext(Dispatchers.IO) {
+        iptvDao.getChannelsByPlaylist(playlistId)
     }
 
     private fun parseTagValue(line: String, tagName: String): String? {
