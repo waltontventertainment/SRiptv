@@ -239,12 +239,17 @@ class MainActivity : ComponentActivity() {
                                             showSettings = true
                                         } else {
                                             // Swipe Left to Right (Finger moves Right)
-                                            if (!showChannelGuide) {
-                                                // 1st Swipe: Open Categories (Channel Guide)
+                                            val isCategoryMenuVisible = viewModel.isCountryMenuVisible.value
+                                            if (!isCategoryMenuVisible && !showChannelGuide) {
+                                                // 1st Swipe: Open Category Window
+                                                viewModel.toggleCountryMenu(true)
+                                            } else if (isCategoryMenuVisible) {
+                                                // 2nd Swipe: Open search window (Channel guide with search)
+                                                viewModel.toggleCountryMenu(false)
                                                 showChannelGuide = true
-                                                showSearchInGuide = false
+                                                showSearchInGuide = true
                                             } else {
-                                                // 2nd Swipe: Show Search box inside the guide drawer
+                                                // Already in channel guide, show search
                                                 showSearchInGuide = true
                                             }
                                         }
@@ -533,9 +538,14 @@ class MainActivity : ComponentActivity() {
             KeyEvent.KEYCODE_DPAD_LEFT -> {
                 if (isLocked) return true
                 if (!showSettings && !showExitDialog) {
-                    if (!showChannelGuide) {
+                    val isCategoryMenuVisible = viewModel.isCountryMenuVisible.value
+                    if (!isCategoryMenuVisible && !showChannelGuide) {
+                        viewModel.toggleCountryMenu(true)
+                        return true
+                    } else if (isCategoryMenuVisible) {
+                        viewModel.toggleCountryMenu(false)
                         showChannelGuide = true
-                        showSearchInGuide = false
+                        showSearchInGuide = true
                         return true
                     } else {
                         showSearchInGuide = true
@@ -636,7 +646,10 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
-                if (showSearchInGuide) {
+                if (viewModel.isCountryMenuVisible.value) {
+                    viewModel.toggleCountryMenu(false)
+                    return true
+                } else if (showSearchInGuide) {
                     showSearchInGuide = false
                     return true
                 } else if (showSettings) {
@@ -771,10 +784,10 @@ fun AndroidVideoPlayer(
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
                         try {
                             val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(4000) // Supercharge boost by +40.0 dB (maximum volume gain!)
+                            enhancer.setTargetGain(2000) // 2000 mB gain for perfect balance with Dolby
                             enhancer.enabled = true
                             loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+40.0 dB)")
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+20.0 dB for Dolby)")
                         } catch (e: Exception) {
                             android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
                         }
@@ -911,12 +924,42 @@ fun AndroidVideoPlayer(
             val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
                 .setDataSourceFactory(dataSourceFactory)
 
+            // 1. Setup high-quality AudioSink for Dolby Digital (AC3), Dolby Digital Plus (E-AC3) & Atmos
+            val audioSink = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(true)
+                .build()
+
+            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+                override fun buildAudioSink(
+                    context: android.content.Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink? {
+                    return audioSink
+                }
+            }
+
+            // 2. Setup TrackSelector to optimize dialogue clarity and enable hardware offload
+            val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context)
+            val trackSelectionParameters = trackSelector.buildUponParameters()
+                .setAudioOffloadPreferences(
+                    androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.Builder()
+                        .setAudioOffloadMode(androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED)
+                        .build()
+                )
+                .build()
+            trackSelector.setParameters(trackSelectionParameters)
+
+            // 3. Setup movie audio attributes to optimize cinema & Dolby surround output
             val audioAttributes = androidx.media3.common.AudioAttributes.Builder()
                 .setUsage(androidx.media3.common.C.USAGE_MEDIA)
                 .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MOVIE)
                 .build()
 
+            // 4. Build ExoPlayer with Dolby-optimized components
             val player = ExoPlayer.Builder(context)
+                .setRenderersFactory(renderersFactory)
+                .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(audioAttributes, true)

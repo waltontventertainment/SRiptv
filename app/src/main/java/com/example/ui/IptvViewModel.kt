@@ -162,6 +162,14 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private var sleepTimerJob: Job? = null
 
     init {
+        // Initialize system music stream volume to 100% maximum level on app launch
+        try {
+            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, maxSystemVol, 0)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val database = Room.databaseBuilder(
             application,
             IptvDatabase::class.java,
@@ -636,6 +644,14 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     fun setVolume(volume: Int) {
         val target = volume.coerceIn(0, 10)
         _currentVolume.value = target
+        
+        try {
+            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            val systemTargetVol = (target * maxSystemVol) / 10
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, systemTargetVol, android.media.AudioManager.FLAG_SHOW_UI)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         
         _volumeDisplayVisible.value = true
         volumeHideJob?.cancel()
