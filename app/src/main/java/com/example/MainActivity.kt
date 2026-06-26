@@ -771,10 +771,10 @@ fun AndroidVideoPlayer(
                     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
                         try {
                             val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(2000) // Professional safe boost by +20.0 dB (extreme but non-clipping volume gain!)
+                            enhancer.setTargetGain(4000) // Supercharge boost by +40.0 dB (maximum volume gain!)
                             enhancer.enabled = true
                             loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+20.0 dB)")
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+40.0 dB)")
                         } catch (e: Exception) {
                             android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
                         }
@@ -795,8 +795,8 @@ fun AndroidVideoPlayer(
                             val config = builder.build()
 
                             for (ch in 0 until channelCount) {
-                                // Apply +8.0dB input gain normalization pre-amp per channel to safely boost faint streams
-                                config.setInputGainByChannelIndex(ch, 8.0f)
+                                // Apply +18.0dB input gain normalization pre-amp per channel to strongly boost faint streams
+                                config.setInputGainByChannelIndex(ch, 18.0f)
 
                                 // Multiband Compressor (DRC) Configuration:
                                 // Smooth out quiet dialog vs loud action, making low TV volume highly audible
@@ -806,12 +806,12 @@ fun AndroidVideoPlayer(
                                     5.0f,     // attackTime (5ms)
                                     45.0f,    // releaseTime (45ms)
                                     4.0f,     // ratio (4:1 compression for strong leveling)
-                                    -30.0f,   // threshold (-30dB dynamic trigger)
+                                    -36.0f,   // threshold (-36dB dynamic trigger to capture quiet audio and lift it)
                                     6.0f,     // kneeWidth (6dB soft knee)
                                     -60.0f,   // noiseGateThreshold
                                     1.0f,     // expanderRatio
-                                    6.0f,     // preGain (+6dB pre-amp compression)
-                                    2.0f      // postGain
+                                    12.0f,    // preGain (+12dB pre-amp compression)
+                                    4.0f      // postGain
                                 )
                                 config.setMbcBandByChannelIndex(ch, 0, mbcBand)
 
@@ -824,7 +824,7 @@ fun AndroidVideoPlayer(
                                     40.0f,   // releaseTime (40ms)
                                     10.0f,   // ratio (10:1 hard limiting)
                                     -1.0f,   // threshold (-1.0dB headroom to maximize loudness)
-                                    2.0f     // postGain (make up +2.0dB post-compression)
+                                    4.0f     // postGain (make up +4.0dB post-compression)
                                 )
                                 config.setLimiterByChannelIndex(ch, limiter)
                             }

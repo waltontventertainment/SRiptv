@@ -67,7 +67,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     val tuningStatusText: StateFlow<String> = _tuningStatusText.asStateFlow()
 
     // Volume level state (0 to 10)
-    private val _currentVolume = MutableStateFlow(7)
+    private val _currentVolume = MutableStateFlow(10)
     val currentVolume: StateFlow<Int> = _currentVolume.asStateFlow()
 
     private val _volumeDisplayVisible = MutableStateFlow(false)
@@ -165,8 +165,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         // Initialize system stream volume safely to ensure sound is audible on launch
         try {
             val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            val systemTargetVol = (7 * maxSystemVol) / 10
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, systemTargetVol, 0)
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, maxSystemVol, 0)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -666,20 +665,8 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     fun adjustVolume(increment: Boolean) {
         val current = _currentVolume.value
-        if (increment && current < 10) {
-            _currentVolume.value = current + 1
-            audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_RAISE, 0)
-        } else if (!increment && current > 0) {
-            _currentVolume.value = current - 1
-            audioManager.adjustStreamVolume(android.media.AudioManager.STREAM_MUSIC, android.media.AudioManager.ADJUST_LOWER, 0)
-        }
-        _volumeDisplayVisible.value = true
-
-        volumeHideJob?.cancel()
-        volumeHideJob = viewModelScope.launch {
-            delay(2000)
-            _volumeDisplayVisible.value = false
-        }
+        val target = if (increment) (current + 1).coerceIn(0, 10) else (current - 1).coerceIn(0, 10)
+        setVolume(target)
     }
 
     fun importPlaylistFromFile(name: String, uri: android.net.Uri, context: android.content.Context) {
