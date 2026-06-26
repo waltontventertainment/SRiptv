@@ -656,6 +656,28 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Retro volume adjustments.
      */
+    fun setVolume(volume: Int) {
+        val target = volume.coerceIn(0, 10)
+        val current = _currentVolume.value
+        if (target == current) return
+        _currentVolume.value = target
+        
+        try {
+            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            val systemTargetVol = (target * maxSystemVol) / 10
+            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, systemTargetVol, 0)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        _volumeDisplayVisible.value = true
+        volumeHideJob?.cancel()
+        volumeHideJob = viewModelScope.launch {
+            delay(2000)
+            _volumeDisplayVisible.value = false
+        }
+    }
+
     fun adjustVolume(increment: Boolean) {
         val current = _currentVolume.value
         if (increment && current < 10) {

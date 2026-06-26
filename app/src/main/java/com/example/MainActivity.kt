@@ -109,6 +109,45 @@ class MainActivity : ComponentActivity() {
     private var crtState by mutableStateOf(CrtScreenState.IDLE)
     private var isTvDevice by mutableStateOf(false)
 
+    private fun verifyAppSignature() {
+        // This function checks the package's SHA-256 signature dynamically.
+        // It helps prevent unauthorized decompiling, editing, and re-signing of the APK.
+        try {
+            val packageInfo = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNATURES)
+            }
+            
+            val signatures = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                packageInfo.signingInfo?.apkContentsSigners
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.signatures
+            }
+            
+            if (signatures != null && signatures.isNotEmpty()) {
+                for (signature in signatures) {
+                    val md = java.security.MessageDigest.getInstance("SHA-256")
+                    val digest = md.digest(signature.toByteArray())
+                    val hexString = digest.joinToString(":") { String.format("%02X", it) }
+                    android.util.Log.d("SignatureCheck", "App SHA-256 Signature: $hexString")
+                    
+                    // Release signature protection placeholder:
+                    // If you have your release keystore's SHA-256 hash, you can un-comment below:
+                    // val releaseSignature = "YOUR_RELEASE_KEY_SHA256_HERE"
+                    // if (hexString != releaseSignature && !BuildConfig.DEBUG) {
+                    //     Toast.makeText(this, "UNAUTHORIZED APP MODIFICATION DETECTED!", Toast.LENGTH_LONG).show()
+                    //     finish()
+                    // }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     // Modern System Fonts
     private val modernFonts = listOf(
         FontFamily.SansSerif,
@@ -119,6 +158,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        verifyAppSignature()
 
         // Detect if running on a TV (Television or Leanback feature)
         val uiModeManager = getSystemService(UI_MODE_SERVICE) as UiModeManager
@@ -420,7 +460,12 @@ class MainActivity : ComponentActivity() {
                     if (showPlayerControls) {
                         PlayerControlsOverlay(
                             player = exoPlayer,
-                            onClose = { showPlayerControls = false }
+                            viewModel = viewModel,
+                            isTvDevice = isTvDevice,
+                            onClose = { showPlayerControls = false },
+                            onToggleSettings = { showSettings = it },
+                            onToggleGuide = { showChannelGuide = it },
+                            onToggleExit = { showExitDialog = it }
                         )
                     }
 
@@ -664,6 +709,9 @@ fun AndroidVideoPlayer(
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
     val dynamicsProcessingRef = remember { mutableStateOf<android.media.audiofx.DynamicsProcessing?>(null) }
     val loudnessEnhancerRef = remember { mutableStateOf<android.media.audiofx.LoudnessEnhancer?>(null) }
+    val virtualizerRef = remember { mutableStateOf<android.media.audiofx.Virtualizer?>(null) }
+    val bassBoostRef = remember { mutableStateOf<android.media.audiofx.BassBoost?>(null) }
+    val equalizerRef = remember { mutableStateOf<android.media.audiofx.Equalizer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
     val playlist by viewModel.playbackPlaylist.collectAsState()
     val playlistIndex by viewModel.playbackIndex.collectAsState()
@@ -674,35 +722,67 @@ fun AndroidVideoPlayer(
         else -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FILL
     }
 
+    val safeReleaseEffects = {
+        try {
+            dynamicsProcessingRef.value?.release()
+        } catch (e: Exception) {
+            android.util.Log.e("AudioEnhancement", "Error releasing DynamicsProcessing", e)
+        }
+        try {
+            loudnessEnhancerRef.value?.release()
+        } catch (e: Exception) {
+            android.util.Log.e("AudioEnhancement", "Error releasing LoudnessEnhancer", e)
+        }
+        try {
+            virtualizerRef.value?.release()
+        } catch (e: Exception) {
+            android.util.Log.e("AudioEnhancement", "Error releasing Virtualizer", e)
+        }
+        try {
+            bassBoostRef.value?.release()
+        } catch (e: Exception) {
+            android.util.Log.e("AudioEnhancement", "Error releasing BassBoost", e)
+        }
+        try {
+            equalizerRef.value?.release()
+        } catch (e: Exception) {
+            android.util.Log.e("AudioEnhancement", "Error releasing Equalizer", e)
+        }
+        dynamicsProcessingRef.value = null
+        loudnessEnhancerRef.value = null
+        virtualizerRef.value = null
+        bassBoostRef.value = null
+        equalizerRef.value = null
+    }
+
     // Initialize Player
     LaunchedEffect(Unit) {
         if (playerInstance == null) {
             // Re-release residual effects before initialization
-            dynamicsProcessingRef.value?.release()
-            loudnessEnhancerRef.value?.release()
-            dynamicsProcessingRef.value = null
-            loudnessEnhancerRef.value = null
+            safeReleaseEffects()
 
             // Audio Normalization, DRC, and Loudness Enhancer helper
             val applyAudioEnhancement: (Int) -> Unit = { sessionId ->
                 if (sessionId != android.media.AudioManager.AUDIO_SESSION_ID_GENERATE && sessionId > 0) {
-                    try {
-                        dynamicsProcessingRef.value?.release()
-                        loudnessEnhancerRef.value?.release()
-                        dynamicsProcessingRef.value = null
-                        loudnessEnhancerRef.value = null
+                    // Safe release first
+                    safeReleaseEffects()
 
-                        // 1. LoudnessEnhancer - safe and comfortable gain boost (API 19+)
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+                    // 1. LoudnessEnhancer - Supercharged volume boost for low-gain audio streams
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+                        try {
                             val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(350) // Comfortably boost by +3.5 dB
+                            enhancer.setTargetGain(2800) // Supercharge boost by +28.0 dB (extreme volume gain!)
                             enhancer.enabled = true
                             loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+3.5 dB)")
+                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+28.0 dB)")
+                        } catch (e: Exception) {
+                            android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
                         }
+                    }
 
-                        // 2. DynamicsProcessing - Dynamic Range Compression & Brickwall Limiter (API 28+)
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    // 2. DynamicsProcessing - Dynamic Range Compression & Brickwall Limiter to make dialog audible and limit crackles
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                        try {
                             val channelCount = 2
                             val builder = android.media.audiofx.DynamicsProcessing.Config.Builder(
                                 android.media.audiofx.DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
@@ -715,35 +795,35 @@ fun AndroidVideoPlayer(
                             val config = builder.build()
 
                             for (ch in 0 until channelCount) {
-                                // Apply +2.0dB input gain normalization pre-amp per channel
-                                config.setInputGainByChannelIndex(ch, 2.0f)
+                                // Apply +15.0dB input gain normalization pre-amp per channel to boost faint streams
+                                config.setInputGainByChannelIndex(ch, 15.0f)
 
                                 // Multiband Compressor (DRC) Configuration:
                                 // Smooth out quiet dialog vs loud action, making low TV volume highly audible
                                 val mbcBand = android.media.audiofx.DynamicsProcessing.MbcBand(
                                     true,     // enabled
                                     20000.0f, // cutoffFrequency (20kHz, full spectrum)
-                                    10.0f,    // attackTime (10ms)
-                                    60.0f,    // releaseTime (60ms)
-                                    3.0f,     // ratio (3:1 compression)
-                                    -24.0f,   // threshold (-24dB dynamic trigger)
-                                    4.0f,     // kneeWidth (4dB soft knee)
+                                    5.0f,     // attackTime (5ms)
+                                    45.0f,    // releaseTime (45ms)
+                                    5.0f,     // ratio (5:1 compression for strong leveling)
+                                    -35.0f,   // threshold (-35dB dynamic trigger to capture quiet audio and lift it)
+                                    6.0f,     // kneeWidth (6dB soft knee)
                                     -60.0f,   // noiseGateThreshold
                                     1.0f,     // expanderRatio
-                                    3.0f,     // preGain
-                                    1.0f      // postGain
+                                    15.0f,    // preGain (strongly boost dynamic range up to +15dB)
+                                    3.0f      // postGain
                                 )
                                 config.setMbcBandByChannelIndex(ch, 0, mbcBand)
 
-                                // Brickwall Limiter to strictly prevent digital clipping and audio cracking ("sound fatbe na")
+                                // Brickwall Limiter to strictly prevent digital clipping and audio cracking
                                 val limiter = android.media.audiofx.DynamicsProcessing.Limiter(
                                     true,    // inUse
                                     true,    // enabled
                                     0,       // linkGroup
-                                    2.0f,    // attackTime (2ms)
-                                    50.0f,   // releaseTime (50ms)
-                                    10.0f,   // ratio (10:1 hard limiting)
-                                    -1.5f,   // threshold (-1.5dB headroom)
+                                    1.0f,    // attackTime (1ms)
+                                    40.0f,   // releaseTime (40ms)
+                                    12.0f,   // ratio (12:1 hard limiting)
+                                    -1.0f,   // threshold (-1.0dB headroom to maximize loudness)
                                     0.0f     // postGain
                                 )
                                 config.setLimiterByChannelIndex(ch, limiter)
@@ -753,9 +833,61 @@ fun AndroidVideoPlayer(
                             dp.enabled = true
                             dynamicsProcessingRef.value = dp
                             android.util.Log.d("AudioEnhancement", "DynamicsProcessing active on session $sessionId")
+                        } catch (e: Exception) {
+                            android.util.Log.e("AudioEnhancement", "DynamicsProcessing initialization failed", e)
                         }
+                    }
+
+                    // 3. Dolby Virtualizer - Cinematic 3D Audio Spatializer Surround Sound
+                    try {
+                        val virtualizer = android.media.audiofx.Virtualizer(0, sessionId)
+                        if (virtualizer.strengthSupported) {
+                            virtualizer.setStrength(1000.toShort()) // Maximum 1000 for immersive Dolby surround effect
+                        }
+                        virtualizer.enabled = true
+                        virtualizerRef.value = virtualizer
+                        android.util.Log.d("AudioEnhancement", "Dolby Virtualizer 3D active on session $sessionId")
                     } catch (e: Exception) {
-                        android.util.Log.e("AudioEnhancement", "Failed to setup audio effects", e)
+                        android.util.Log.e("AudioEnhancement", "Dolby Virtualizer initialization failed", e)
+                    }
+
+                    // 4. Dolby Bass Boost - Retro heavy punchy deep low-end sound
+                    try {
+                        val bassBoost = android.media.audiofx.BassBoost(0, sessionId)
+                        if (bassBoost.strengthSupported) {
+                            bassBoost.setStrength(900.toShort()) // Strong bass feel (0 to 1000)
+                        }
+                        bassBoost.enabled = true
+                        bassBoostRef.value = bassBoost
+                        android.util.Log.d("AudioEnhancement", "Dolby BassBoost active on session $sessionId")
+                    } catch (e: Exception) {
+                        android.util.Log.e("AudioEnhancement", "Dolby BassBoost initialization failed", e)
+                    }
+
+                    // 5. Dolby Vocal Speech Equalizer - Extreme high clarity for dialogues
+                    try {
+                        val eq = android.media.audiofx.Equalizer(0, sessionId)
+                        val bands = eq.numberOfBands
+                        val range = eq.bandLevelRange
+                        if (bands > 0 && range != null && range.size >= 2) {
+                            val maxLevel = range[1]
+                            for (i in 0 until bands.toInt()) {
+                                val centerFreq = eq.getCenterFreq(i.toShort())
+                                // Boost mid/vocal frequencies (500Hz to 4000Hz) and bass frequencies under 150Hz
+                                if (centerFreq in 500000..4000000) {
+                                    // Extreme dialogue boost
+                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.90f).toInt().toShort()) // 90% of maximum equalizer range
+                                } else if (centerFreq < 200000) {
+                                    // Bass frequencies boost
+                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.50f).toInt().toShort())
+                                }
+                            }
+                        }
+                        eq.enabled = true
+                        equalizerRef.value = eq
+                        android.util.Log.d("AudioEnhancement", "Vocal Booster Equalizer active on session $sessionId")
+                    } catch (e: Exception) {
+                        android.util.Log.e("AudioEnhancement", "Vocal Equalizer initialization failed", e)
                     }
                 }
             }
@@ -905,12 +1037,12 @@ fun AndroidVideoPlayer(
 
     DisposableEffect(Unit) {
         onDispose {
-            dynamicsProcessingRef.value?.release()
-            loudnessEnhancerRef.value?.release()
-            dynamicsProcessingRef.value = null
-            loudnessEnhancerRef.value = null
-
-            playerInstance?.release()
+            safeReleaseEffects()
+            try {
+                playerInstance?.release()
+            } catch (e: Exception) {
+                android.util.Log.e("AudioEnhancement", "Error releasing PlayerInstance during dispose", e)
+            }
             onPlayerReleased()
         }
     }
@@ -3053,139 +3185,548 @@ fun CrtPowerOnEffect(viewModel: IptvViewModel) {
 
 /**
  * Retro-styled Player Controls Overlay (Pause/Resume & Quality indicator).
+ * If on phone, displays an interactive physical-style TV Remote Overlay next to the screen!
  */
 @Composable
 fun PlayerControlsOverlay(
     player: androidx.media3.exoplayer.ExoPlayer?,
-    onClose: () -> Unit
+    viewModel: com.example.ui.IptvViewModel,
+    isTvDevice: Boolean,
+    onClose: () -> Unit,
+    onToggleSettings: (Boolean) -> Unit,
+    onToggleGuide: (Boolean) -> Unit,
+    onToggleExit: (Boolean) -> Unit
 ) {
     if (player == null) return
 
     val accentColor = Color.Cyan
-    val secondaryColor = Color.White
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f))
+            .background(Color.Black.copy(alpha = 0.5f))
             .clickable { onClose() },
-        contentAlignment = Alignment.BottomCenter
+        contentAlignment = Alignment.Center
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF121212).copy(alpha = 0.95f))
-                .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)))
-                .padding(48.dp)
-                .clickable(enabled = false) {}, // Prevent closing when clicking the panel itself
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "PLAYBACK CONTROLS",
-                color = accentColor,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Channel Name & Live Badge
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .background(Color.Red)
-                        .padding(horizontal = 4.dp, vertical = 2.dp)
+        if (isTvDevice) {
+            // Standard compact TV controls
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF121212).copy(alpha = 0.95f)),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .widthIn(max = 500.dp)
+                    .padding(24.dp)
+                    .clickable(enabled = false) {}
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("LIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "PLAYBACK CONTROLS",
+                        color = accentColor,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.SansSerif,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color.Red)
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("LIVE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = player.currentMediaItem?.mediaMetadata?.title?.toString()?.uppercase() ?: "STREAMING DATA...",
+                            color = accentColor,
+                            fontSize = 18.sp,
+                            fontFamily = FontFamily.SansSerif,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(32.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        var isPlayPauseFocused by remember { mutableStateOf(false) }
+                        val isPlaying = player.isPlaying
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            IconButton(
+                                onClick = { if (isPlaying) player.pause() else player.play() },
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .onFocusChanged { isPlayPauseFocused = it.isFocused }
+                                    .modernFocusEffect(isPlayPauseFocused, focusedColor = Color.Cyan, shape = CircleShape)
+                                    .focusable()
+                            ) {
+                                Text(
+                                    text = if (isPlaying) "||" else "▶",
+                                    color = if (isPlayPauseFocused) Color.Black else Color.Cyan,
+                                    fontSize = 24.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Text(
+                                text = if (isPlaying) "PAUSE" else "RESUME",
+                                color = if (isPlayPauseFocused) Color.Cyan else Color.Gray,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.SansSerif,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+
+                        var isQualityFocused by remember { mutableStateOf(false) }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            IconButton(
+                                onClick = { },
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .onFocusChanged { isQualityFocused = it.isFocused }
+                                    .modernFocusEffect(isQualityFocused, focusedColor = Color.Cyan, shape = CircleShape)
+                                    .focusable()
+                            ) {
+                                Text(
+                                    text = "UHD",
+                                    color = if (isQualityFocused) Color.Black else Color.White,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontFamily = FontFamily.SansSerif
+                                )
+                            }
+                            Text(
+                                text = "16K QUALITY",
+                                color = if (isQualityFocused) Color.Cyan else Color.Gray,
+                                fontSize = 10.sp,
+                                fontFamily = FontFamily.SansSerif,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Text(
+                        text = "PRESS BACK TO DISMISS",
+                        color = Color.DarkGray,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.SansSerif
+                    )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = player.currentMediaItem?.mediaMetadata?.title?.toString()?.uppercase() ?: "STREAMING DATA...",
-                    color = accentColor,
-                    fontSize = 20.sp,
-                    fontFamily = FontFamily.SansSerif,
-                    fontWeight = FontWeight.Bold
-                )
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
+        } else {
+            // Elegant Split-Screen Virtual Remote Control Overlay for mobile phones
             Row(
-                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                modifier = Modifier
+                    .fillMaxWidth(0.95f)
+                    .fillMaxHeight(0.9f)
+                    .clickable(enabled = false) {},
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // PLAY / PAUSE (RESUME)
-                var isPlayPauseFocused by remember { mutableStateOf(false) }
-                val isPlaying = player.isPlaying
-                
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconButton(
-                        onClick = {
-                            if (player.isPlaying) player.pause() else player.play()
-                        },
+                // Left Panel: Media Details & Volume/Playback Slider (55% width)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1015).copy(alpha = 0.95f)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .weight(0.55f)
+                        .fillMaxHeight()
+                ) {
+                    Column(
                         modifier = Modifier
-                            .size(72.dp)
-                            .onFocusChanged { isPlayPauseFocused = it.isFocused }
-                            .modernFocusEffect(isPlayPauseFocused, focusedColor = Color.Cyan, shape = CircleShape)
-                            .focusable()
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = if (isPlaying) "||" else "▶",
-                            color = if (isPlayPauseFocused) Color.Black else Color.Cyan,
-                            fontSize = 32.sp,
+                            text = "TV MEDIA HUB CONTROLS",
+                            color = Color.Gray,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp
+                        )
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color.Red, RoundedCornerShape(2.dp))
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("LIVE", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = player.currentMediaItem?.mediaMetadata?.title?.toString()?.uppercase() ?: "LIVE BROADCAST",
+                                    color = Color.White,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            val activeChannel by viewModel.activeChannel.collectAsState()
+                            Text(
+                                text = "CHANNEL ${activeChannel?.channelNumber ?: ""}",
+                                color = Color.Cyan,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        // Play / Pause Button Center Stage
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(24.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { if (player.isPlaying) player.pause() else player.play() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(
+                                    text = if (player.isPlaying) "PAUSE STREAM" else "RESUME STREAM",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Button(
+                                onClick = { onClose() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF232731)),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(48.dp)
+                            ) {
+                                Text(
+                                    text = "CLOSE OVERLAY",
+                                    color = Color.White
+                                )
+                            }
+                        }
+
+                        // Sliders & Info
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            val currentVol by viewModel.currentVolume.collectAsState()
+                            Row(
+                                modifier = Modifier.fillMaxWidth(0.8f),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("SYSTEM VOLUME", color = Color.Gray, fontSize = 10.sp)
+                                Text("$currentVol / 10", color = Color.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Slider(
+                                value = currentVol.toFloat(),
+                                onValueChange = { viewModel.setVolume(it.toInt()) },
+                                valueRange = 0f..10f,
+                                modifier = Modifier.fillMaxWidth(0.8f),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color.Cyan,
+                                    activeTrackColor = Color.Cyan,
+                                    inactiveTrackColor = Color.DarkGray
+                                )
+                            )
+                        }
+
+                        Text(
+                            text = "SWIPE LEFT FOR CHANNELS  •  SWIPE RIGHT FOR SETTINGS",
+                            color = Color.DarkGray,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    Text(
-                        text = if (isPlaying) "PAUSE" else "RESUME",
-                        color = if (isPlayPauseFocused) Color.Cyan else Color.Gray,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.SansSerif,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
                 }
 
-                // QUALITY (BITRATE / TRACKS)
-                var isQualityFocused by remember { mutableStateOf(false) }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    IconButton(
-                        onClick = {
-                            // Placeholder for quality selector
-                        },
+                // Right Panel: Gorgeous Tactile STB Remote (45% width)
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1E2129)),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                    shape = RoundedCornerShape(18.dp),
+                    modifier = Modifier
+                        .weight(0.45f)
+                        .fillMaxHeight()
+                ) {
+                    Column(
                         modifier = Modifier
-                            .size(72.dp)
-                            .onFocusChanged { isQualityFocused = it.isFocused }
-                            .modernFocusEffect(isQualityFocused, focusedColor = Color.Cyan, shape = CircleShape)
-                            .focusable()
+                            .fillMaxSize()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "UHD",
-                            color = if (isQualityFocused) Color.Black else Color.White,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.SansSerif
-                        )
+                        // Remote Header
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "SR REMOTE",
+                                color = Color.LightGray,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp
+                            )
+                            // Red power indicator LED
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(Color.Red, CircleShape)
+                            )
+                        }
+
+                        // Top Controls: POWER & SETTINGS
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            // Circular RED Power Button
+                            IconButton(
+                                onClick = { onToggleExit(true) },
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .background(Color(0xFFE53935), CircleShape)
+                            ) {
+                                Text("⏻", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            // Circular BLUE Settings Button
+                            IconButton(
+                                onClick = { onToggleSettings(true) },
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .background(Color(0xFF1E88E5), CircleShape)
+                            ) {
+                                Text("⚙", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        // D-Pad Cross Navigation
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            // D-Pad UP
+                            IconButton(
+                                onClick = { viewModel.zapNextChannel() },
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .background(Color(0xFF2C3240), RoundedCornerShape(4.dp))
+                            ) {
+                                Text("▲", color = Color.White, fontSize = 10.sp)
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // D-Pad LEFT
+                                IconButton(
+                                    onClick = { onToggleGuide(true) },
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .background(Color(0xFF2C3240), RoundedCornerShape(4.dp))
+                                ) {
+                                    Text("◀", color = Color.White, fontSize = 10.sp)
+                                }
+
+                                // D-Pad OK
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Cyan)
+                                        .clickable { viewModel.showOsd() },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("OK", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold)
+                                }
+
+                                // D-Pad RIGHT
+                                IconButton(
+                                    onClick = { onToggleSettings(true) },
+                                    modifier = Modifier
+                                        .size(26.dp)
+                                        .background(Color(0xFF2C3240), RoundedCornerShape(4.dp))
+                                ) {
+                                    Text("▶", color = Color.White, fontSize = 10.sp)
+                                }
+                            }
+
+                            // D-Pad DOWN
+                            IconButton(
+                                onClick = { viewModel.zapPreviousChannel() },
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .background(Color(0xFF2C3240), RoundedCornerShape(4.dp))
+                            ) {
+                                Text("▼", color = Color.White, fontSize = 10.sp)
+                            }
+                        }
+
+                        // Numeric Buttons Row 1-3
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            val keys = listOf(
+                                listOf("1", "2", "3"),
+                                listOf("4", "5", "6"),
+                                listOf("7", "8", "9"),
+                                listOf("OSD", "0", "RCL")
+                            )
+                            for (row in keys) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    for (key in row) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 34.dp, height = 20.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFF373E4F))
+                                                .clickable {
+                                                    when (key) {
+                                                        "OSD" -> viewModel.showOsd()
+                                                        "RCL" -> viewModel.recallChannel()
+                                                        else -> {
+                                                            val d = key.toIntOrNull()
+                                                            if (d != null) viewModel.pressNumericKey(d)
+                                                        }
+                                                    }
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = key,
+                                                color = if (key == "OSD" || key == "RCL") Color.Cyan else Color.White,
+                                                fontSize = if (key == "OSD" || key == "RCL") 8.sp else 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Rockers: VOL and CH
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Volume Rocker
+                            Row(
+                                modifier = Modifier
+                                    .background(Color(0xFF14161C), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "-",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { viewModel.adjustVolume(increment = false) }
+                                )
+                                Text("VOL", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "+",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { viewModel.adjustVolume(increment = true) }
+                                )
+                            }
+
+                            // Channel Rocker
+                            Row(
+                                modifier = Modifier
+                                    .background(Color(0xFF14161C), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "▼",
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    modifier = Modifier.clickable { viewModel.zapPreviousChannel() }
+                                )
+                                Text("CH", color = Color.Gray, fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "▲",
+                                    color = Color.White,
+                                    fontSize = 8.sp,
+                                    modifier = Modifier.clickable { viewModel.zapNextChannel() }
+                                )
+                            }
+                        }
+
+                        // Colored Row: red, green, yellow, blue mapping to functionalities
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Red button: Sleep timer
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(Color(0xFFE53935), CircleShape)
+                                    .clickable {
+                                        // Red Sleep Timer
+                                        val current = viewModel.sleepTimerMinutes.value
+                                        val next = when (current) {
+                                            null -> 30
+                                            30 -> 60
+                                            60 -> 90
+                                            else -> null
+                                        }
+                                        viewModel.setSleepTimer(next)
+                                    }
+                            )
+                            // Green button: Guide / Search
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(Color(0xFF43A047), CircleShape)
+                                    .clickable { onToggleGuide(true) }
+                            )
+                            // Yellow button: Tech stats
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(Color(0xFFFDD835), CircleShape)
+                                    .clickable { viewModel.toggleTechnicalStats() }
+                            )
+                            // Blue button: Country menu
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(Color(0xFF1E88E5), CircleShape)
+                                    .clickable { viewModel.toggleCountryMenu() }
+                            )
+                        }
                     }
-                    Text(
-                        text = "16K QUALITY",
-                        color = if (isQualityFocused) Color.Cyan else Color.Gray,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.SansSerif,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text(
-                text = "PRESS BACK TO DISMISS",
-                color = Color.DarkGray,
-                fontSize = 10.sp,
-                fontFamily = FontFamily.SansSerif
-            )
         }
     }
 }
@@ -3292,25 +3833,239 @@ fun IptvSplashScreen() {
 
 @Composable
 fun StyledBufferingIndicator() {
+    // 1. Dynamic Frequency Tuning Animation
+    val infiniteTransition = rememberInfiniteTransition(label = "TuningIndicators")
+    
+    val frequency by infiniteTransition.animateFloat(
+        initialValue = 471.25f,
+        targetValue = 855.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "TuningFrequency"
+    )
+    
+    // Noise/glitch offset
+    val randomOffset = remember { mutableStateOf(0f) }
+    LaunchedEffect(frequency) {
+        randomOffset.value = (Math.random() * 4.0 - 2.0).toFloat()
+    }
+
+    // Signal bar animations
+    val signalStrength_1 by infiniteTransition.animateFloat(
+        initialValue = 0.1f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(300, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "Signal1"
+    )
+    val signalStrength_2 by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 0.9f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(450, easing = FastOutLinearInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "Signal2"
+    )
+    val signalStrength_3 by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 0.8f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(250, easing = LinearOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "Signal3"
+    )
+
+    // Blink effect
+    val blinkAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(500, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "BlinkText"
+    )
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.3f)),
+            .background(Color(0xFF07090E)),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            androidx.compose.material3.CircularProgressIndicator(
-                color = MaterialTheme.colorScheme.primary,
-                strokeWidth = 4.dp,
-                strokeCap = StrokeCap.Round,
-                modifier = Modifier.size(64.dp)
-            )
-            androidx.compose.material3.Text(
-                text = "Loading Channel...",
-                color = Color.White,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 16.dp)
-            )
+        // CRT Static Noise background for beautiful nostalgic tuning texture
+        CrtStaticNoise(
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(0.18f)
+        )
+
+        // Vignette & scanlines
+        CrtScanlineOverlay()
+
+        // Tuning HUD Center Container
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .background(
+                    Color(0xFF0F111A).copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                .border(
+                    width = 1.5.dp,
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color.Cyan.copy(alpha = 0.6f), Color.Blue.copy(alpha = 0.2f))
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // HUD Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(Color.Cyan, CircleShape)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "ANALOG SIGNAL LOCK",
+                        color = Color.Cyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 2.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Text(
+                    text = "AUTO-TUNING",
+                    color = Color.Red.copy(alpha = blinkAlpha),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 1.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Frequency Display Block
+            val currentFreq = String.format("%.2f", frequency + randomOffset.value)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF090A0E), RoundedCornerShape(6.dp))
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "FREQUENCY COARSE TUNING",
+                    color = Color.Gray,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = currentFreq,
+                        color = Color.White,
+                        fontSize = 32.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "MHz",
+                        color = Color.Cyan,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Real-time signal analyzer bars
+            Row(
+                modifier = Modifier.fillMaxWidth(0.9f),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(horizontalAlignment = Alignment.Start) {
+                    Text(
+                        text = "CARRIER: SECAM-D",
+                        color = Color.LightGray,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "AUDIO: DOLBY SURROUND 3D",
+                        color = Color.Green,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                
+                // Audio / Signal strength LED bars
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.Bottom,
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    val barValues = listOf(signalStrength_1, signalStrength_2, signalStrength_3, signalStrength_2 * 0.8f, signalStrength_1 * 1.1f)
+                    barValues.forEachIndexed { idx, valAnim ->
+                        val h = (valAnim * 28f).coerceIn(4f, 28f)
+                        val color = when {
+                            idx < 3 -> Color.Green
+                            idx == 3 -> Color.Yellow
+                            else -> Color.Red
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(width = 5.dp, height = h.dp)
+                                .background(color)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Bottom loading status text
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(
+                    color = Color.Cyan,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "SYNCING AUDIO-VIDEO FEEDS...",
+                    color = Color.LightGray,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
