@@ -1,5 +1,4 @@
 <resources>
     <string name="app_name">SR IPTV</string>
     <string name="media_playback_label">Media Playback</string>
-    <string name="attribution_label">Audio Control</string>
 </resources>

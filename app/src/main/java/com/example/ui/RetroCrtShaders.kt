@@ -1,7 +1,6 @@
 package com.example.ui
 
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas

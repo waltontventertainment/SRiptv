@@ -20,11 +20,6 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: IptvRepository
     private val sharedPrefs = application.getSharedPreferences("sr_iptv_prefs", Context.MODE_PRIVATE)
-    private val audioManager = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-        application.createAttributionContext("audio_control").getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-    } else {
-        application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
-    }
 
     // Data streams
     val playlists: StateFlow<List<M3UPlaylist>>
@@ -658,13 +653,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
         val target = volume.coerceIn(0, 10)
         _currentVolume.value = target
         
-        try {
-            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            val systemTargetVol = (target * maxSystemVol) / 10
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, systemTargetVol, android.media.AudioManager.FLAG_SHOW_UI)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        // Removed direct system volume manipulation to avoid AppOps attribution errors in preview
         
         _volumeDisplayVisible.value = true
         volumeHideJob?.cancel()

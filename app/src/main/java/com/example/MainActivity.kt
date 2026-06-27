@@ -1,7 +1,6 @@
 package com.example
 
 import android.annotation.SuppressLint
-import android.media.AudioManager
 import android.os.Bundle
 import android.view.KeyEvent
 import android.widget.Toast
@@ -759,7 +758,12 @@ fun AndroidVideoPlayer(
                 .build()
 
             // 4. Build ExoPlayer with Dolby-optimized components
-            val player = ExoPlayer.Builder(context)
+            val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                context.createAttributionContext("audio")
+            } else {
+                context
+            }
+            val player = ExoPlayer.Builder(attributionContext)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
