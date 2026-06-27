@@ -20,7 +20,11 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: IptvRepository
     private val sharedPrefs = application.getSharedPreferences("sr_iptv_prefs", Context.MODE_PRIVATE)
-    private val audioManager = application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    private val audioManager = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        application.createAttributionContext("audio_control").getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    } else {
+        application.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+    }
 
     // Data streams
     val playlists: StateFlow<List<M3UPlaylist>>
@@ -43,7 +47,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     val isStaticActive: StateFlow<Boolean> = _isStaticActive.asStateFlow()
 
     // Dynamic Video Aspect Ratio (FILL, FIT, ZOOM)
-    private val _aspectRatioMode = MutableStateFlow("FILL")
+    private val _aspectRatioMode = MutableStateFlow(sharedPrefs.getString("aspect_ratio_mode", "FILL") ?: "FILL")
     val aspectRatioMode: StateFlow<String> = _aspectRatioMode.asStateFlow()
 
     // Stream playback quality and health indicators
@@ -110,7 +114,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private val _isChannelLocked = MutableStateFlow(false)
     val isChannelLocked: StateFlow<Boolean> = _isChannelLocked.asStateFlow()
 
-    private val _selectedCategory = MutableStateFlow<String?>(null)
+    private val _selectedCategory = MutableStateFlow<String?>(sharedPrefs.getString("last_selected_category", null))
     val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
 
     private val _isPowerOnEffectActive = MutableStateFlow(true)
@@ -133,7 +137,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
     private var osdHideJob: Job? = null
 
-    private val _selectedFontIndex = MutableStateFlow(0)
+    private val _selectedFontIndex = MutableStateFlow(sharedPrefs.getInt("selected_font_index", 0))
     val selectedFontIndex: StateFlow<Int> = _selectedFontIndex.asStateFlow()
 
     // Multi-digit channel input buffer
@@ -162,14 +166,6 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     private var sleepTimerJob: Job? = null
 
     init {
-        // Initialize system music stream volume to 100% maximum level on app launch
-        try {
-            val maxSystemVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
-            audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, maxSystemVol, 0)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
         val database = Room.databaseBuilder(
             application,
             IptvDatabase::class.java,
@@ -381,6 +377,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun setCategory(category: String?) {
         _selectedCategory.value = category
+        sharedPrefs.edit().putString("last_selected_category", category).apply()
     }
 
     /**
@@ -395,7 +392,9 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cycleFont() {
-        _selectedFontIndex.value = (_selectedFontIndex.value + 1) % 3
+        val nextFont = (_selectedFontIndex.value + 1) % 3
+        _selectedFontIndex.value = nextFont
+        sharedPrefs.edit().putInt("selected_font_index", nextFont).apply()
     }
 
     private fun playWhiteNoiseSound() {
@@ -419,10 +418,19 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
             // Immediately tune to first channel or restore
             sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
-            delay(500) // Small delay to allow Room to settle
+            
             if (playlistIdToSelect != null) {
-                val plist = playlists.value.find { it.id == playlistIdToSelect }
-                val pChannels = repository.getChannelsByPlaylist(playlistIdToSelect)
+                // Wait for both the playlist and channels flow to catch up
+                var plist = playlists.value.find { it.id == playlistIdToSelect }
+                var pChannels = repository.getChannelsByPlaylist(playlistIdToSelect)
+                var attempts = 0
+                while ((plist == null || pChannels.isEmpty()) && attempts < 15) {
+                    delay(300)
+                    plist = playlists.value.find { it.id == playlistIdToSelect }
+                    pChannels = repository.getChannelsByPlaylist(playlistIdToSelect)
+                    attempts++
+                }
+                
                 if (pChannels.isNotEmpty()) {
                     _selectedSourceUrl.value = plist?.url
                     sharedPrefs.edit().putString("last_selected_source_url", plist?.url ?: "").apply()
@@ -449,6 +457,8 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setActiveChannel(channel: IPTVChannel) {
+        if (_activeChannel.value?.id == channel.id) return
+        
         viewModelScope.launch {
             val current = _activeChannel.value
             if (current != null && current.id != channel.id) {
@@ -507,11 +517,13 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
      * Toggles video scaling/aspect ratio mode.
      */
     fun toggleAspectRatio() {
-        _aspectRatioMode.value = when (_aspectRatioMode.value) {
+        val nextMode = when (_aspectRatioMode.value) {
             "FILL" -> "FIT"
             "FIT" -> "ZOOM"
             else -> "FILL"
         }
+        _aspectRatioMode.value = nextMode
+        sharedPrefs.edit().putString("aspect_ratio_mode", nextMode).apply()
     }
 
     fun toggleFavorite(channel: IPTVChannel) {

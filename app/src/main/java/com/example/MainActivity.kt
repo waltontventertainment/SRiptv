@@ -185,11 +185,7 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxSize(),
                 color = Color.Black
             ) {
-                val baseContext = LocalContext.current
-                val context = baseContext
-                val audioManager = remember(context) {
-                    context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                }
+                val context = LocalContext.current
                 var accumulatedDragX by remember { mutableStateOf(0f) }
                 var accumulatedDragY by remember { mutableStateOf(0f) }
 
@@ -343,7 +339,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // 2c. Stream Buffering Indicator
+                // 2c. Stream Buffering Indicator
                     if (isStreamBuffering && !isStaticActive && !isStreamError) {
                         StyledBufferingIndicator()
                     }
@@ -797,6 +793,13 @@ fun AndroidVideoPlayer(
                     }
                 }
 
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    if (isPlaying) {
+                        viewModel.setStreamBuffering(false)
+                        viewModel.setStreamError(false)
+                    }
+                }
+
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     viewModel.setStreamBuffering(false)
                     viewModel.setStreamError(true, "SIGNAL INTERRUPTED")
@@ -843,20 +846,35 @@ fun AndroidVideoPlayer(
             if (incomingMediaItems.isEmpty()) return@LaunchedEffect
 
             // Check if playlist has changed significantly
-            val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size
+            val currentMediaItemIds = (0 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
+            val incomingMediaItemIds = incomingMediaItems.map { it.mediaId }
+            val isSamePlaylist = currentMediaItemIds == incomingMediaItemIds
 
             try {
-                // Simplified media item switching to ensure fresh state on every change
-                // This helps avoid the "stuck in buffering" issue on some IPTV streams
-                viewModel.setStreamBuffering(true)
-                viewModel.setStreamError(false)
-                
-                player.stop()
-                player.clearMediaItems()
-                player.setMediaItems(incomingMediaItems)
-                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
-                player.prepare()
-                player.play()
+                if (isSamePlaylist) {
+                    // Fast zap if within same playlist
+                    if (player.currentMediaItemIndex != playlistIndex) {
+                        viewModel.setStreamBuffering(true)
+                        viewModel.setStreamError(false)
+                        player.stop() // Clear buffer for clean switch
+                        player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                        player.prepare()
+                        player.play()
+                    } else if (player.playbackState == androidx.media3.common.Player.STATE_IDLE || player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
+                        player.prepare()
+                        player.play()
+                    }
+                } else {
+                    // New playlist or significant change
+                    viewModel.setStreamBuffering(true)
+                    viewModel.setStreamError(false)
+                    player.stop()
+                    player.clearMediaItems()
+                    player.setMediaItems(incomingMediaItems)
+                    player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                    player.prepare()
+                    player.play()
+                }
             } catch (e: Exception) {
                 android.util.Log.e("AndroidVideoPlayer", "Error loading media items", e)
                 viewModel.setStreamError(true, "FORMAT ERROR")
@@ -1504,9 +1522,6 @@ fun SettingsMenu(
                     .focusRequester(focusRequester)
                     .onFocusChanged { 
                         isNameFocused = it.isFocused 
-                        if (it.isFocused) {
-                            keyboardController?.show()
-                        }
                     },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
@@ -1539,9 +1554,6 @@ fun SettingsMenu(
                     .fillMaxWidth()
                     .onFocusChanged { 
                         isUrlFocused = it.isFocused 
-                        if (it.isFocused) {
-                            keyboardController?.show()
-                        }
                     },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
@@ -1966,8 +1978,10 @@ fun SettingsMenu(
     }
 
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(300)
+        kotlinx.coroutines.delay(600) // Longer delay to allow screen to stabilize
         try {
+            focusManager.clearFocus() // Explicitly clear any auto-focus
+            keyboardController?.hide()
             closeButtonFocusRequester.requestFocus()
         } catch (e: Exception) {
             e.printStackTrace()
