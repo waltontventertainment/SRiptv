@@ -85,7 +85,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.MediaSession
 import androidx.media3.ui.PlayerView
 import com.example.data.IPTVChannel
 import com.example.data.M3UPlaylist
@@ -98,7 +97,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var viewModel: IptvViewModel
     private var exoPlayer: ExoPlayer? = null
-    private var mediaSession: MediaSession? = null
 
     // Modern visual UI states
     private var showSettings by mutableStateOf(false)
@@ -187,7 +185,8 @@ class MainActivity : ComponentActivity() {
                 modifier = Modifier.fillMaxSize(),
                 color = Color.Black
             ) {
-                val context = LocalContext.current
+                val baseContext = LocalContext.current
+                val context = baseContext
                 val audioManager = remember(context) {
                     context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
                 }
@@ -277,12 +276,8 @@ class MainActivity : ComponentActivity() {
                             viewModel = viewModel,
                             onPlayerCreated = { player ->
                                 exoPlayer = player
-                                // Setup media session
-                                mediaSession = MediaSession.Builder(this@MainActivity, player).build()
                             },
                             onPlayerReleased = {
-                                mediaSession?.release()
-                                mediaSession = null
                                 exoPlayer = null
                             }
                         )
@@ -503,7 +498,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        mediaSession?.release()
         exoPlayer?.release()
     }
 
@@ -718,13 +712,9 @@ fun AndroidVideoPlayer(
     onPlayerReleased: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
+    val baseContext = LocalContext.current
+    val context = baseContext
     var playerInstance by remember { mutableStateOf<ExoPlayer?>(null) }
-    val dynamicsProcessingRef = remember { mutableStateOf<android.media.audiofx.DynamicsProcessing?>(null) }
-    val loudnessEnhancerRef = remember { mutableStateOf<android.media.audiofx.LoudnessEnhancer?>(null) }
-    val virtualizerRef = remember { mutableStateOf<android.media.audiofx.Virtualizer?>(null) }
-    val bassBoostRef = remember { mutableStateOf<android.media.audiofx.BassBoost?>(null) }
-    val equalizerRef = remember { mutableStateOf<android.media.audiofx.Equalizer?>(null) }
     val aspectRatioMode by viewModel.aspectRatioMode.collectAsState()
     val playlist by viewModel.playbackPlaylist.collectAsState()
     val playlistIndex by viewModel.playbackIndex.collectAsState()
@@ -736,175 +726,12 @@ fun AndroidVideoPlayer(
     }
 
     val safeReleaseEffects = {
-        try {
-            dynamicsProcessingRef.value?.release()
-        } catch (e: Exception) {
-            android.util.Log.e("AudioEnhancement", "Error releasing DynamicsProcessing", e)
-        }
-        try {
-            loudnessEnhancerRef.value?.release()
-        } catch (e: Exception) {
-            android.util.Log.e("AudioEnhancement", "Error releasing LoudnessEnhancer", e)
-        }
-        try {
-            virtualizerRef.value?.release()
-        } catch (e: Exception) {
-            android.util.Log.e("AudioEnhancement", "Error releasing Virtualizer", e)
-        }
-        try {
-            bassBoostRef.value?.release()
-        } catch (e: Exception) {
-            android.util.Log.e("AudioEnhancement", "Error releasing BassBoost", e)
-        }
-        try {
-            equalizerRef.value?.release()
-        } catch (e: Exception) {
-            android.util.Log.e("AudioEnhancement", "Error releasing Equalizer", e)
-        }
-        dynamicsProcessingRef.value = null
-        loudnessEnhancerRef.value = null
-        virtualizerRef.value = null
-        bassBoostRef.value = null
-        equalizerRef.value = null
+        // No-op since effects are removed
     }
 
     // Initialize Player
     LaunchedEffect(Unit) {
         if (playerInstance == null) {
-            // Re-release residual effects before initialization
-            safeReleaseEffects()
-
-            // Audio Normalization, DRC, and Loudness Enhancer helper
-            val applyAudioEnhancement: (Int) -> Unit = { sessionId ->
-                if (sessionId != android.media.AudioManager.AUDIO_SESSION_ID_GENERATE && sessionId > 0) {
-                    // Safe release first
-                    safeReleaseEffects()
-
-                    // 1. LoudnessEnhancer - Supercharged safe volume boost for low-gain audio streams
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
-                        try {
-                            val enhancer = android.media.audiofx.LoudnessEnhancer(sessionId)
-                            enhancer.setTargetGain(2000) // 2000 mB gain for perfect balance with Dolby
-                            enhancer.enabled = true
-                            loudnessEnhancerRef.value = enhancer
-                            android.util.Log.d("AudioEnhancement", "LoudnessEnhancer active (+20.0 dB for Dolby)")
-                        } catch (e: Exception) {
-                            android.util.Log.e("AudioEnhancement", "LoudnessEnhancer initialization failed", e)
-                        }
-                    }
-
-                    // 2. DynamicsProcessing - Clean Dynamic Range Compression & Brickwall Limiter
-                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                        try {
-                            val channelCount = 2
-                            val builder = android.media.audiofx.DynamicsProcessing.Config.Builder(
-                                android.media.audiofx.DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
-                                channelCount,
-                                false, 0, // PreEQ off
-                                true, 1,  // Multiband Compressor (1 band for simple DRC)
-                                false, 0, // PostEQ off
-                                true      // Hard Limiter active
-                            )
-                            val config = builder.build()
-
-                            for (ch in 0 until channelCount) {
-                                // Apply +18.0dB input gain normalization pre-amp per channel to strongly boost faint streams
-                                config.setInputGainByChannelIndex(ch, 18.0f)
-
-                                // Multiband Compressor (DRC) Configuration:
-                                // Smooth out quiet dialog vs loud action, making low TV volume highly audible
-                                val mbcBand = android.media.audiofx.DynamicsProcessing.MbcBand(
-                                    true,     // enabled
-                                    20000.0f, // cutoffFrequency (20kHz, full spectrum)
-                                    5.0f,     // attackTime (5ms)
-                                    45.0f,    // releaseTime (45ms)
-                                    4.0f,     // ratio (4:1 compression for strong leveling)
-                                    -36.0f,   // threshold (-36dB dynamic trigger to capture quiet audio and lift it)
-                                    6.0f,     // kneeWidth (6dB soft knee)
-                                    -60.0f,   // noiseGateThreshold
-                                    1.0f,     // expanderRatio
-                                    12.0f,    // preGain (+12dB pre-amp compression)
-                                    4.0f      // postGain
-                                )
-                                config.setMbcBandByChannelIndex(ch, 0, mbcBand)
-
-                                // Brickwall Limiter to strictly prevent digital clipping and audio cracking
-                                val limiter = android.media.audiofx.DynamicsProcessing.Limiter(
-                                    true,    // inUse
-                                    true,    // enabled
-                                    0,       // linkGroup
-                                    1.0f,    // attackTime (1ms)
-                                    40.0f,   // releaseTime (40ms)
-                                    10.0f,   // ratio (10:1 hard limiting)
-                                    -1.0f,   // threshold (-1.0dB headroom to maximize loudness)
-                                    4.0f     // postGain (make up +4.0dB post-compression)
-                                )
-                                config.setLimiterByChannelIndex(ch, limiter)
-                            }
-
-                            val dp = android.media.audiofx.DynamicsProcessing(0, sessionId, config)
-                            dp.enabled = true
-                            dynamicsProcessingRef.value = dp
-                            android.util.Log.d("AudioEnhancement", "DynamicsProcessing active on session $sessionId")
-                        } catch (e: Exception) {
-                            android.util.Log.e("AudioEnhancement", "DynamicsProcessing initialization failed", e)
-                        }
-                    }
-
-                    // 3. Dolby Virtualizer - Cinematic 3D Audio Spatializer Surround Sound
-                    try {
-                        val virtualizer = android.media.audiofx.Virtualizer(0, sessionId)
-                        if (virtualizer.strengthSupported) {
-                            virtualizer.setStrength(1000.toShort()) // Maximum 1000 for immersive Dolby surround effect
-                        }
-                        virtualizer.enabled = true
-                        virtualizerRef.value = virtualizer
-                        android.util.Log.d("AudioEnhancement", "Dolby Virtualizer 3D active on session $sessionId")
-                    } catch (e: Exception) {
-                        android.util.Log.e("AudioEnhancement", "Dolby Virtualizer initialization failed", e)
-                    }
-
-                    // 4. Dolby Bass Boost - Retro heavy punchy deep low-end sound
-                    try {
-                        val bassBoost = android.media.audiofx.BassBoost(0, sessionId)
-                        if (bassBoost.strengthSupported) {
-                            bassBoost.setStrength(1000.toShort()) // Maximum bass boost feel
-                        }
-                        bassBoost.enabled = true
-                        bassBoostRef.value = bassBoost
-                        android.util.Log.d("AudioEnhancement", "Dolby BassBoost active on session $sessionId")
-                    } catch (e: Exception) {
-                        android.util.Log.e("AudioEnhancement", "Dolby BassBoost initialization failed", e)
-                    }
-
-                    // 5. Dolby Vocal Speech Equalizer - Extreme high clarity for dialogues
-                    try {
-                        val eq = android.media.audiofx.Equalizer(0, sessionId)
-                        val bands = eq.numberOfBands
-                        val range = eq.bandLevelRange
-                        if (bands > 0 && range != null && range.size >= 2) {
-                            val maxLevel = range[1]
-                            for (i in 0 until bands.toInt()) {
-                                val centerFreq = eq.getCenterFreq(i.toShort())
-                                // Boost mid/vocal frequencies (500Hz to 4000Hz) and bass frequencies under 150Hz
-                                if (centerFreq in 500000..4000000) {
-                                    // Extreme dialogue boost
-                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.95f).toInt().toShort()) // 95% of maximum equalizer range
-                                } else if (centerFreq < 200000) {
-                                    // Heavy Bass frequencies boost
-                                    eq.setBandLevel(i.toShort(), (maxLevel * 0.80f).toInt().toShort()) // 80% boost for rich retro warm feel
-                                }
-                            }
-                        }
-                        eq.enabled = true
-                        equalizerRef.value = eq
-                        android.util.Log.d("AudioEnhancement", "Vocal Booster Equalizer active on session $sessionId")
-                    } catch (e: Exception) {
-                        android.util.Log.e("AudioEnhancement", "Vocal Equalizer initialization failed", e)
-                    }
-                }
-            }
-
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
                     2000,  // minBufferMs (extremely low buffer requirements for instant play)
@@ -924,29 +751,8 @@ fun AndroidVideoPlayer(
             val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(context)
                 .setDataSourceFactory(dataSourceFactory)
 
-            // 1. Setup high-quality AudioSink for Dolby Digital (AC3), Dolby Digital Plus (E-AC3) & Atmos
-            val audioSink = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(true)
-                .build()
-
-            val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
-                override fun buildAudioSink(
-                    context: android.content.Context,
-                    enableFloatOutput: Boolean,
-                    enableAudioTrackPlaybackParams: Boolean
-                ): androidx.media3.exoplayer.audio.AudioSink? {
-                    return audioSink
-                }
-            }
-
-            // 2. Setup TrackSelector to optimize dialogue clarity and enable hardware offload
             val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context)
             val trackSelectionParameters = trackSelector.buildUponParameters()
-                .setAudioOffloadPreferences(
-                    androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.Builder()
-                        .setAudioOffloadMode(androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED)
-                        .build()
-                )
                 .build()
             trackSelector.setParameters(trackSelectionParameters)
 
@@ -958,7 +764,6 @@ fun AndroidVideoPlayer(
 
             // 4. Build ExoPlayer with Dolby-optimized components
             val player = ExoPlayer.Builder(context)
-                .setRenderersFactory(renderersFactory)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
@@ -971,10 +776,6 @@ fun AndroidVideoPlayer(
                 }
 
             player.addListener(object : androidx.media3.common.Player.Listener {
-                override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                    applyAudioEnhancement(audioSessionId)
-                }
-
                 override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                     val format = player.videoFormat
                     val codec = format?.sampleMimeType?.substringAfterLast("/") ?: "N/A"
@@ -1015,7 +816,6 @@ fun AndroidVideoPlayer(
             })
 
             playerInstance = player
-            applyAudioEnhancement(player.audioSessionId)
             onPlayerCreated(player)
         }
     }
