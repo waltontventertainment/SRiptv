@@ -758,7 +758,12 @@ fun AndroidVideoPlayer(
                 .build()
 
             // 4. Build ExoPlayer with Dolby-optimized components
-            val player = ExoPlayer.Builder(context.applicationContext)
+            val attributionContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                context.createAttributionContext("audio")
+            } else {
+                context
+            }
+            val player = ExoPlayer.Builder(attributionContext)
                 .setTrackSelector(trackSelector)
                 .setMediaSourceFactory(mediaSourceFactory)
                 .setLoadControl(loadControl)
