@@ -419,6 +419,7 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
 
             // Immediately tune to first channel or restore
             sharedPrefs.edit().putBoolean("has_tuned_channels", true).apply()
+            delay(500) // Small delay to allow Room to settle
             if (playlistIdToSelect != null) {
                 val plist = playlists.value.find { it.id == playlistIdToSelect }
                 val pChannels = repository.getChannelsByPlaylist(playlistIdToSelect)
@@ -808,8 +809,8 @@ class IptvViewModel(application: Application) : AndroidViewModel(application) {
                 channelsToPreheat.add(allActive[prevIndex])
             }
             
-            // Next 5 channels
-            val nextCount = minOf(5, allActive.size - 1)
+            // Next 2 channels (Reduced from 5 to minimize network/CPU load on TVs)
+            val nextCount = minOf(2, allActive.size - 1)
             for (i in 1..nextCount) {
                 val nextIndex = (currentIndex + i) % allActive.size
                 if (nextIndex != currentIndex && !channelsToPreheat.any { it.id == allActive[nextIndex].id }) {

@@ -846,25 +846,17 @@ fun AndroidVideoPlayer(
             val isSamePlaylist = incomingMediaItems.size == currentMediaItems.size
 
             try {
-                if (!isSamePlaylist) {
-                    viewModel.setStreamBuffering(true)
-                    viewModel.setStreamError(false)
-                    player.setMediaItems(incomingMediaItems)
-                    player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
-                    player.prepare()
-                    player.play()
-                } else if (player.currentMediaItemIndex != playlistIndex) {
-                    viewModel.setStreamBuffering(true)
-                    viewModel.setStreamError(false)
-                    player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
-                    player.prepare()
-                    player.play()
-                } else {
-                    if (player.playbackState == androidx.media3.common.Player.STATE_IDLE || player.playbackState == androidx.media3.common.Player.STATE_ENDED) {
-                        player.prepare()
-                    }
-                    player.play()
-                }
+                // Simplified media item switching to ensure fresh state on every change
+                // This helps avoid the "stuck in buffering" issue on some IPTV streams
+                viewModel.setStreamBuffering(true)
+                viewModel.setStreamError(false)
+                
+                player.stop()
+                player.clearMediaItems()
+                player.setMediaItems(incomingMediaItems)
+                player.seekTo(playlistIndex, androidx.media3.common.C.TIME_UNSET)
+                player.prepare()
+                player.play()
             } catch (e: Exception) {
                 android.util.Log.e("AndroidVideoPlayer", "Error loading media items", e)
                 viewModel.setStreamError(true, "FORMAT ERROR")
@@ -1397,6 +1389,7 @@ fun SettingsMenu(
     var playlistUrl by remember { mutableStateOf("") }
 
     val focusRequester = remember { FocusRequester() }
+    val closeButtonFocusRequester = remember { FocusRequester() }
 
     val filePickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         contract = androidx.activity.result.contract.ActivityResultContracts.GetContent()
@@ -1466,8 +1459,10 @@ fun SettingsMenu(
                 IconButton(
                     onClick = onClose,
                     modifier = Modifier
+                        .focusRequester(closeButtonFocusRequester)
                         .onFocusChanged { isCloseFocused = it.isFocused }
                         .modernFocusEffect(isCloseFocused, focusedColor = accentColor, shape = CircleShape)
+                        .focusable()
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
@@ -1971,9 +1966,9 @@ fun SettingsMenu(
     }
 
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.delay(300)
         try {
-            focusRequester.requestFocus()
+            closeButtonFocusRequester.requestFocus()
         } catch (e: Exception) {
             e.printStackTrace()
         }
